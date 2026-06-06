@@ -121,15 +121,17 @@ public struct LMInput {
         }
     }
 
-    /// Representation of prepared input audio(s).
+    /// Representation of prepared input audio.
     public struct ProcessedAudio {
 
-        public let samples: MLXArray
+        /// Mel spectrogram features, shape [batch, frames, melBins] or [frames, melBins].
+        public let features: MLXArray
+        /// Optional attention mask indicating padding frames (True = padding).
+        public let mask: MLXArray?
 
-        public init(
-            samples: MLXArray
-        ) {
-            self.samples = samples
+        public init(features: MLXArray, mask: MLXArray? = nil) {
+            self.features = features
+            self.mask = mask
         }
     }
 
