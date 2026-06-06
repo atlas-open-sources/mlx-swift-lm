@@ -2715,6 +2715,11 @@ public struct Gemma4Processor: UserInputProcessor {
     /// sequence of begin-of-image / video soft tokens / end-of-image. Mirrors the
     /// behavior of HF's `Gemma4Processor` Python implementation.
     public static let videoPlaceholder = "<|video|>"
+    // Gemma 4 audio prompt special tokens (begin-of-audio, soft audio token,
+    // end-of-audio), matching the tokenizer's special-token strings.
+    public static let boaTokenString = "<|audio>"
+    public static let audioTokenString = "<|audio|>"
+    public static let eoaTokenString = "<audio|>"
 
     public init(_ config: Gemma4ProcessorConfiguration, tokenizer: any Tokenizer) {
         self.config = config
@@ -2869,13 +2874,20 @@ public struct Gemma4Processor: UserInputProcessor {
 
         // Audio handling: extract mel features, inject <|audio|> placeholder tokens, build ProcessedAudio
         var processedAudio: LMInput.ProcessedAudio? = nil
-        if !input.audios.isEmpty, let audioTokenId = config.audioTokenId {
+        if !input.audios.isEmpty, config.audioTokenId != nil {
             let extractor = Gemma4AudioFeatureExtractor()
             // Bridge main's structured `UserInput.Audio` (.url/.array) to the raw
             // PCM `[Float]` the feature extractor expects. `asMLXArray` decodes a
-            // file URL via AVAudioFile or passes through an in-memory array.
+            // file URL via AVAssetReader or passes through an in-memory array.
+            // The Conformer mel extractor is built for 16 kHz mono; main's
+            // `AudioProcessing` defaults to 48 kHz, so force the rate/channels
+            // here — otherwise the mel spectrogram is computed on mis-sampled
+            // data and the model emits only <pad> tokens.
+            var audioProcessing = input.processing.audio
+            audioProcessing.sampleRate = Double(extractor.samplingRate)
+            audioProcessing.channels = 1
             let audioSamples = try await input.audios[0]
-                .asMLXArray(processing: input.processing.audio).asArray(Float.self)
+                .asMLXArray(processing: audioProcessing).asArray(Float.self)
             let (melFeatures, melMask) = extractor.extract(audio: audioSamples)
 
             // Fix #6: audio token count from actual subsampling math (two 2x conv blocks)
@@ -2883,13 +2895,24 @@ public struct Gemma4Processor: UserInputProcessor {
             let afterConv0 = (melFrames + 2 - 3) / 2 + 1
             let numAudioTokens = min((afterConv0 + 2 - 3) / 2 + 1, 750)
 
-            // Fix #8: inject audio placeholder tokens into the prompt
-            // Insert before final assistant turn (last newline token 108) or append
-            let audioPlaceholders = Array(repeating: audioTokenId, count: numAudioTokens)
-            if let lastNewlineIdx = promptTokens.lastIndex(of: 108) {
-                promptTokens.insert(contentsOf: audioPlaceholders, at: lastNewlineIdx)
+            // Build the begin/audio/end-of-audio block and splice it into the user
+            // turn, matching the reference Gemma 4 audio prompt format:
+            // `<|audio>` + `<|audio|>` * N + `<audio|>`. Injecting bare audio tokens
+            // without these markers (and at the wrong turn position) makes the model
+            // emit only <pad>. The tokenizer encodes these as single special tokens,
+            // exactly as the image/video placeholders are handled.
+            let audioBlock =
+                Self.boaTokenString
+                + String(repeating: Self.audioTokenString, count: numAudioTokens)
+                + Self.eoaTokenString
+            let decoded = tokenizer.decode(tokenIds: promptTokens, skipSpecialTokens: false)
+            let userMarker = "<start_of_turn>user\n"
+            if let r = decoded.range(of: userMarker) {
+                let injected = decoded.replacingCharacters(
+                    in: r.upperBound..<r.upperBound, with: audioBlock + "\n")
+                promptTokens = tokenizer.encode(text: injected)
             } else {
-                promptTokens.append(contentsOf: audioPlaceholders)
+                promptTokens = tokenizer.encode(text: audioBlock + "\n" + decoded)
             }
 
             // Fix #2: mask polarity inversion — extractor outputs 1=valid but encoder expects True=padding

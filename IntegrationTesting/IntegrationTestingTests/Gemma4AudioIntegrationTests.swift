@@ -32,7 +32,7 @@ struct Gemma4AudioIntegrationTests {
 
     private static let audioURL = URL(
         fileURLWithPath:
-            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_speech_test.aiff"
+            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_speech_test.wav"
     )
 
     @Test func gemma4_e4b_transcribesAudio() async throws {
@@ -53,6 +53,34 @@ struct Gemma4AudioIntegrationTests {
         )
 
         print("🎙️ Gemma 4 audio transcription:\n\(answer)")
-        #expect(!answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        let lower = answer.lowercased()
+
+        // PROVEN today: the audio path runs end-to-end and the model produces
+        // coherent natural language (not a <pad>/special-token wall). The <pad>
+        // wall was the symptom of feeding mis-sampled audio; with clean 16 kHz
+        // mono input the pipeline yields finite mel features, a finite Conformer
+        // forward pass, and audio soft-token embeddings scattered into the prompt.
+        #expect(!lower.contains("<pad>"), "audio path regressed to a <pad> wall")
+        #expect(
+            answer.split(whereSeparator: { $0 == " " || $0 == "\n" }).count >= 5,
+            "audio path produced no coherent text: \(answer)")
+
+        // KNOWN ISSUE (pr-192 incompleteness): the Conformer audio tower produces
+        // finite-but-semantically-incorrect embeddings, so the model receives the
+        // audio tokens but cannot yet transcribe the speech. Its end-to-end audio
+        // test was a stub upstream, so the tower was never validated against the
+        // reference. Recovering the spoken words ("quick brown fox … lazy dog …
+        // river bank") is the deterministic success signal — wrapped here so the
+        // suite is green for the proven parts and will flag the moment the tower
+        // is fixed and this starts passing.
+        withKnownIssue("Gemma 4 audio tower (pr-192) produces incorrect embeddings; transcription not yet recovered") {
+            let expectedWords = ["quick", "brown", "fox", "lazy", "dog", "river", "bank", "jump"]
+            let hits = expectedWords.filter { lower.contains($0) }
+            #expect(
+                hits.count >= 3,
+                "transcription did not recover the spoken words (matched \(hits) in: \(answer))"
+            )
+        }
     }
 }

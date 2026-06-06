@@ -49,6 +49,19 @@ struct Gemma4VideoIntegrationTests {
         )
 
         print("🎬 Gemma 4 video description:\n\(answer)")
-        #expect(!answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        let lower = answer.lowercased()
+        // Reject the degenerate <pad>/special-token wall failure mode.
+        #expect(!lower.contains("<pad>"), "description is a <pad> wall — video tower not producing usable embeddings")
+        // Must be a substantive natural-language description, not a token fragment.
+        let wordCount = answer.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
+        #expect(wordCount >= 8, "description too short to be a real video understanding: \(answer)")
+        // The clip is a sequence of solid colour blocks; a correct description
+        // should reference colour/blocks/frames. Require at least one such cue.
+        let visualCues = ["color", "colour", "block", "frame", "screen", "background", "blue", "green", "yellow", "magenta", "red"]
+        #expect(
+            visualCues.contains(where: { lower.contains($0) }),
+            "description lacks any visual cue from the clip: \(answer)"
+        )
     }
 }
