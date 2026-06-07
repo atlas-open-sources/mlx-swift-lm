@@ -56,41 +56,20 @@ struct Gemma4AudioIntegrationTests {
 
         let lower = answer.lowercased()
 
-        // PROVEN today: the audio path runs end-to-end and the model produces
-        // coherent natural language (not a <pad>/special-token wall). The <pad>
-        // wall was the symptom of feeding mis-sampled audio; with clean 16 kHz
-        // mono input the pipeline yields finite mel features, a finite Conformer
-        // forward pass, and audio soft-token embeddings scattered into the prompt.
+        // The full audio path works end to end: 16 kHz mono mel (fft_length=512,
+        // periodic Hann window, semicausal padding, bin-index mel filterbank),
+        // Conformer tower (output verified identical to the reference impl), audio
+        // soft-token embeddings scattered into the prompt, and the begin/end-of-
+        // audio block spliced into the user turn (the tokenizer decodes the turn
+        // token as "<|turn>", which the splice must match). The model recovers the
+        // spoken sentence: "The quick brown fox jumps over the lazy dog near the
+        // river bank."
         #expect(!lower.contains("<pad>"), "audio path regressed to a <pad> wall")
+        let expectedWords = ["quick", "brown", "fox", "lazy", "dog", "river", "jump"]
+        let hits = expectedWords.filter { lower.contains($0) }
         #expect(
-            answer.split(whereSeparator: { $0 == " " || $0 == "\n" }).count >= 5,
-            "audio path produced no coherent text: \(answer)")
-
-        // KNOWN ISSUE (pr-192 incompleteness): the Conformer audio tower produces
-        // finite-but-semantically-incorrect embeddings, so the model receives the
-        // audio tokens but cannot transcribe (it replies "you have not provided
-        // the audio"). pr-192's tower e2e test was a stub upstream, so the tower
-        // was never validated. Bugs fixed so far while chasing this: 16 kHz mono
-        // bridge (was 48 kHz → mel NaN), boa/eoa prompt format (bare tokens →
-        // <pad>), WAV vs big-endian-AIFF fixture (garbage samples), and the
-        // relative-position span (now past-only [maxPastHorizon…0], matching
-        // Google's reference). Ruled OUT vs VincentGourbin/gemma-4-swift-mlx
-        // (working): weights load (conv/proj sums non-zero), and ConformerBlock,
-        // FFN (residual_weight 0.5), attention scale/softcap/per_dim_scale,
-        // rel-shift, ClippableLinear, SubSampleConvProjection, and norms all match.
-        // rel-pos span is a no-op here (context_right=0). The remaining defect is a
-        // subtle numeric/dataflow bug in the Conformer, not visible statically —
-        // definitive next step is a stage-by-stage numerical diff of the two towers
-        // on identical mel input (needs a cross-package harness; pr-192 tower types
-        // are private). Recovering the spoken words is the success signal; this
-        // flags the moment the tower is fixed.
-        withKnownIssue("Gemma 4 audio tower (pr-192) still produces incorrect embeddings; transcription not yet recovered") {
-            let expectedWords = ["quick", "brown", "fox", "lazy", "dog", "river", "bank", "jump"]
-            let hits = expectedWords.filter { lower.contains($0) }
-            #expect(
-                hits.count >= 3,
-                "transcription did not recover the spoken words (matched \(hits) in: \(answer))"
-            )
-        }
+            hits.count >= 3,
+            "transcription did not recover the spoken words (matched \(hits) in: \(answer))"
+        )
     }
 }

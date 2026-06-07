@@ -37,26 +37,32 @@ public func gemma4MelFilterBank(
     for i in 0 ..< (numMelFilters + 2) {
         melPoints[i] = melMin + Float(i) * (melMax - melMin) / Float(numMelFilters + 1)
     }
-    let freqPoints = melPoints.map { melToHz($0) }
-
-    // All frequency bins
-    var allFreqs = [Float](repeating: 0, count: numFrequencyBins)
-    let freqStep = Float(samplingRate) / Float(2 * (numFrequencyBins - 1))
-    for i in 0 ..< numFrequencyBins {
-        allFreqs[i] = Float(i) * freqStep
+    // Map mel points to rounded FFT bin indices and build the triangles in
+    // bin-index space (matching the reference Gemma 4 extractor). Building them
+    // in continuous-Hz space yields different triangle widths/areas on the
+    // nonlinear mel scale, scaling the mel energies (~1.6x) so the audio tower
+    // can't interpret them.
+    let fftLen = (numFrequencyBins - 1) * 2
+    let binPoints = melPoints.map { mel -> Int in
+        let hz = melToHz(mel)
+        return Int((hz * Float(fftLen) / Float(samplingRate)).rounded())
     }
 
-    // Build triangular filter bank
     var filterBank = [Float](repeating: 0, count: numFrequencyBins * numMelFilters)
     for i in 0 ..< numMelFilters {
-        let lower = freqPoints[i]
-        let center = freqPoints[i + 1]
-        let upper = freqPoints[i + 2]
+        let left = binPoints[i]
+        let center = binPoints[i + 1]
+        let right = binPoints[i + 2]
 
-        for j in 0 ..< numFrequencyBins {
-            let rising = (allFreqs[j] - lower) / max(center - lower, 1e-10)
-            let falling = (upper - allFreqs[j]) / max(upper - center, 1e-10)
-            filterBank[j * numMelFilters + i] = max(0, min(rising, falling))
+        if center > left {
+            for k in left ..< min(center, numFrequencyBins) where k >= 0 {
+                filterBank[k * numMelFilters + i] = Float(k - left) / Float(center - left)
+            }
+        }
+        if right > center {
+            for k in center ..< min(right, numFrequencyBins) where k >= 0 {
+                filterBank[k * numMelFilters + i] = Float(right - k) / Float(right - center)
+            }
         }
     }
 
@@ -91,7 +97,10 @@ public struct Gemma4AudioFeatureExtractor {
         maxFrequency: Float = 8000.0,
         preemphasis: Float = 0.0,
         preemphasisHTKFlavor: Bool = true,
-        fftOverdrive: Bool = true,
+        // processor_config.json specifies fft_length=512 directly; overdrive
+        // (doubling to 1024) yields the wrong spectrum/mel and the audio tower
+        // can't interpret it. Match the reference extractor.
+        fftOverdrive: Bool = false,
         inputScaleFactor: Float = 1.0,
         melFloor: Float = 1e-3
     ) {
@@ -110,11 +119,11 @@ public struct Gemma4AudioFeatureExtractor {
         if fftOverdrive { fftLen *= 2 }
         self.fftLength = fftLen
 
-        // Hanning window (non-zero at endpoints, matching Python)
-        let arg = Float.pi * 2.0 / Float(frameLength)
+        // Periodic Hann window (torch.hann_window(periodic=true) → divisor N, not
+        // N-1; zero at i=0), matching the reference extractor.
         var win = [Float](repeating: 0, count: frameLength)
         for i in 0 ..< frameLength {
-            win[i] = 0.5 - 0.5 * cos(arg * (Float(i) + 0.5))
+            win[i] = 0.5 - 0.5 * cos(2.0 * Float.pi * Float(i) / Float(frameLength))
         }
         self.window = win
 
@@ -138,15 +147,15 @@ public struct Gemma4AudioFeatureExtractor {
             waveform = Array(waveform.prefix(maxLength))
         }
 
-        // Pad to multiple of 128
-        let padTarget = ((waveform.count + 127) / 128) * 128
-        var mask = [Float](repeating: 1.0, count: padTarget)
-        if waveform.count < padTarget {
-            mask.replaceSubrange(
-                waveform.count ..< padTarget,
-                with: repeatElement(0.0, count: padTarget - waveform.count))
-            waveform.append(contentsOf: repeatElement(0.0, count: padTarget - waveform.count))
-        }
+        // Semicausal padding: prepend frameLength/2 zeros before framing (ref
+        // Google feature_extraction_gemma4). Without it the frame alignment is
+        // shifted relative to what the audio tower was trained on.
+        waveform = [Float](repeating: 0, count: frameLength / 2) + waveform
+
+        // No multiple-of-128 padding: the reference extractor frames the
+        // semicausal-padded waveform directly (all frames valid). The extra
+        // 128-pad added trailing zero frames that shifted the token count.
+        let mask = [Float](repeating: 1.0, count: waveform.count)
 
         // Scale
         if inputScaleFactor != 1.0 {
@@ -155,8 +164,8 @@ public struct Gemma4AudioFeatureExtractor {
             }
         }
 
-        // Frame extraction (unfold)
-        let frameSizeForUnfold = frameLength + 1
+        // Frame extraction (unfold) — frame size = frameLength (ref uses N, not N+1)
+        let frameSizeForUnfold = frameLength
         let numFrames = (waveform.count - frameSizeForUnfold) / hopLength + 1
         guard numFrames > 0 else {
             return (MLXArray.zeros([0, featureSize]), MLXArray.zeros([0]))

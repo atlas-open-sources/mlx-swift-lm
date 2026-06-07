@@ -2911,7 +2911,10 @@ public struct Gemma4Processor: UserInputProcessor {
                 + String(repeating: Self.audioTokenString, count: numAudioTokens)
                 + Self.eoaTokenString
             let decoded = tokenizer.decode(tokenIds: promptTokens, skipSpecialTokens: false)
-            let userMarker = "<start_of_turn>user\n"
+            // The tokenizer decodes the start-of-turn token as "<|turn>" (not the
+            // literal "<start_of_turn>"); use the decoded form so the audio block
+            // is spliced inside the user turn rather than prepended before <bos>.
+            let userMarker = "<|turn>user\n"
             if let r = decoded.range(of: userMarker) {
                 let injected = decoded.replacingCharacters(
                     in: r.upperBound..<r.upperBound, with: audioBlock + "\n")
