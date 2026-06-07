@@ -1,13 +1,16 @@
 // Copyright © 2026 Apple Inc.
 //
-// Real end-to-end Gemma 4 AUDIO inference. Downloads gemma-4-e4b-it-4bit (an
-// audio-capable variant) and asks it to transcribe a real speech clip,
-// exercising the PR #192 Conformer audio tower end to end (AVAssetReader PCM →
-// mel feature extractor → audio tower → text).
+// Real end-to-end Gemma 4 AUDIO inference. Downloads an audio-capable Gemma 4
+// VLM and asks it to transcribe real speech clips, exercising the full audio
+// path: AVAssetReader PCM → mel feature extractor (fft_length=512, periodic Hann
+// window, semicausal padding, bin-index mel filterbank) → Conformer audio tower
+// → begin/end-of-audio prompt splice → text.
 //
-// The speech clip is generated offline with macOS `say` and committed at
-// Tests/MLXLMTests/Resources/gemma_speech_test.aiff:
-//   "The quick brown fox jumps over the lazy dog near the river bank."
+// Speech clips are generated offline with macOS `say` and committed under
+// Tests/MLXLMTests/Resources/:
+//   gemma_speech_test.wav  — "The quick brown fox jumps over the lazy dog near the river bank."
+//   gemma_speech_test2.wav — "She sells sea shells by the sea shore on a bright summer morning."
+//   gemma_speech_long.wav  — "The weather forecast predicts heavy rain tomorrow afternoon ..."
 //
 // Run:
 //   xcodebuild test -project IntegrationTesting.xcodeproj \
@@ -27,49 +30,58 @@ private let models = IntegrationTestModels(
     tokenizerLoader: #huggingFaceTokenizerLoader()
 )
 
+private let resources =
+    "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources"
+
+/// One speech clip + the distinctive words a correct transcription must recover.
+struct SpeechCase: Sendable, CustomStringConvertible {
+    let file: String
+    let expected: [String]
+    var description: String { file }
+}
+
+// Clear, natural-cadence sentences that gemma-4 E4B transcribes reliably.
+// NOTE: we deliberately do NOT assert verbatim on a tongue-twister
+// (gemma_speech_test2.wav) or on E2B — cross-checked against the reference impl
+// (VincentGourbin/gemma-4-swift-mlx), both mis-hear the synthetic tongue-twister
+// and E2B emits ~empty for verbatim ASR. Those are model limitations on
+// synthetic TTS, not integration bugs.
+private let speechCases: [SpeechCase] = [
+    .init(
+        file: "gemma_speech_test.wav",
+        expected: ["quick", "brown", "fox", "lazy", "dog", "river"]),
+    .init(
+        file: "gemma_speech_long.wav",
+        expected: ["weather", "rain", "forecast", "afternoon", "breeze", "evening", "sky"]),
+]
+
 @Suite(.serialized)
 struct Gemma4AudioIntegrationTests {
 
-    private static let audioURL = URL(
-        fileURLWithPath:
-            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_speech_test.wav"
-    )
-
-    @Test func gemma4_e4b_transcribesAudio() async throws {
-        let container = try await models.vlmContainer(
-            for: ModelConfiguration(id: "mlx-community/gemma-4-e4b-it-4bit")
-        )
-
+    private func transcribe(model: String, clip: SpeechCase) async throws -> String {
+        let container = try await models.vlmContainer(for: ModelConfiguration(id: model))
         let session = ChatSession(
-            container,
-            generateParameters: GenerateParameters(maxTokens: 120, temperature: 0)
-        )
-
-        let answer = try await session.respond(
+            container, generateParameters: GenerateParameters(maxTokens: 120, temperature: 0))
+        let url = URL(fileURLWithPath: "\(resources)/\(clip.file)")
+        return try await session.respond(
             to: "Transcribe the speech in this audio clip.",
-            images: [],
-            videos: [],
-            audios: [.url(Self.audioURL)]
-        )
+            images: [], videos: [], audios: [.url(url)])
+    }
 
-        print("🎙️ Gemma 4 audio transcription:\n\(answer)")
-
+    private func assertRecovered(_ answer: String, _ clip: SpeechCase) {
         let lower = answer.lowercased()
-
-        // The full audio path works end to end: 16 kHz mono mel (fft_length=512,
-        // periodic Hann window, semicausal padding, bin-index mel filterbank),
-        // Conformer tower (output verified identical to the reference impl), audio
-        // soft-token embeddings scattered into the prompt, and the begin/end-of-
-        // audio block spliced into the user turn (the tokenizer decodes the turn
-        // token as "<|turn>", which the splice must match). The model recovers the
-        // spoken sentence: "The quick brown fox jumps over the lazy dog near the
-        // river bank."
-        #expect(!lower.contains("<pad>"), "audio path regressed to a <pad> wall")
-        let expectedWords = ["quick", "brown", "fox", "lazy", "dog", "river", "jump"]
-        let hits = expectedWords.filter { lower.contains($0) }
+        #expect(!lower.contains("<pad>"), "audio path regressed to a <pad> wall: \(answer)")
+        let hits = clip.expected.filter { lower.contains($0) }
         #expect(
             hits.count >= 3,
-            "transcription did not recover the spoken words (matched \(hits) in: \(answer))"
-        )
+            "[\(clip.file)] did not recover the spoken words (matched \(hits) in: \(answer))")
+    }
+
+    /// E4B verbatim transcription on clear, natural-cadence clips.
+    @Test(arguments: speechCases)
+    func gemma4_e4b_transcribes(_ clip: SpeechCase) async throws {
+        let answer = try await transcribe(model: "mlx-community/gemma-4-e4b-it-4bit", clip: clip)
+        print("🎙️ [e4b/\(clip.file)] \(answer)")
+        assertRecovered(answer, clip)
     }
 }

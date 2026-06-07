@@ -147,15 +147,21 @@ public struct Gemma4AudioFeatureExtractor {
             waveform = Array(waveform.prefix(maxLength))
         }
 
-        // Semicausal padding: prepend frameLength/2 zeros before framing (ref
-        // Google feature_extraction_gemma4). Without it the frame alignment is
-        // shifted relative to what the audio tower was trained on.
+        // Match the reference extractor (mlx-vlm Gemma4AudioFeatureExtractor) exactly:
+        // 1) pad the raw waveform up to a multiple of 128 (pad_to_multiple_of),
+        // 2) semicausal left-pad by frameLength/2 zeros,
+        // 3) unfold with frame size frameLength + 1.
+        // The mask marks the multiple-of-128 tail (and only that) as padding.
+        let padTarget = ((waveform.count + 127) / 128) * 128
+        var mask = [Float](repeating: 1.0, count: waveform.count)
+        if waveform.count < padTarget {
+            let extra = padTarget - waveform.count
+            waveform.append(contentsOf: repeatElement(0.0, count: extra))
+            mask.append(contentsOf: repeatElement(0.0, count: extra))
+        }
+        // Semicausal left-pad (prepend frameLength/2 zeros).
         waveform = [Float](repeating: 0, count: frameLength / 2) + waveform
-
-        // No multiple-of-128 padding: the reference extractor frames the
-        // semicausal-padded waveform directly (all frames valid). The extra
-        // 128-pad added trailing zero frames that shifted the token count.
-        let mask = [Float](repeating: 1.0, count: waveform.count)
+        mask = [Float](repeating: 0, count: frameLength / 2) + mask
 
         // Scale
         if inputScaleFactor != 1.0 {
@@ -164,8 +170,8 @@ public struct Gemma4AudioFeatureExtractor {
             }
         }
 
-        // Frame extraction (unfold) — frame size = frameLength (ref uses N, not N+1)
-        let frameSizeForUnfold = frameLength
+        // Frame extraction (unfold) — reference uses frame size frameLength + 1.
+        let frameSizeForUnfold = frameLength + 1
         let numFrames = (waveform.count - frameSizeForUnfold) / hopLength + 1
         guard numFrames > 0 else {
             return (MLXArray.zeros([0, featureSize]), MLXArray.zeros([0]))
