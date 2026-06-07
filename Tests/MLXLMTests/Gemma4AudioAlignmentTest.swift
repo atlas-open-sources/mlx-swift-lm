@@ -14,7 +14,7 @@ import Testing
 @Suite("Gemma4 Audio Alignment")
 struct Gemma4AudioAlignmentTest {
 
-    /// Load JSON fixture from Tests/MLXVLMTests/Fixtures/
+    /// Load JSON fixture from Tests/MLXLMTests/Fixtures/
     private func loadFixture(_ name: String) throws -> [String: Any] {
         // #filePath points to source file location
         let sourceDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

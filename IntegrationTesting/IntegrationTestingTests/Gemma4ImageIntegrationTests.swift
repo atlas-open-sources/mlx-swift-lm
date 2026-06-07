@@ -23,14 +23,20 @@ private let imageModels = IntegrationTestModels(
     tokenizerLoader: #huggingFaceTokenizerLoader()
 )
 
+// Resolve Tests/MLXLMTests/Resources relative to this source file so the suite
+// runs on any clone / CI checkout, not just one developer's machine.
+private let imageResources = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()  // IntegrationTestingTests/
+    .deletingLastPathComponent()  // IntegrationTesting/
+    .deletingLastPathComponent()  // repo root
+    .appendingPathComponent("Tests/MLXLMTests/Resources")
+
 @Suite(.serialized)
 struct Gemma4ImageIntegrationTests {
 
     // NASA "Earthrise" (Apollo 8) — public domain. See Resources/FIXTURES_LICENSES.md.
-    private static let imageURL = URL(
-        fileURLWithPath:
-            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_image_earthrise.jpg"
-    )
+    private static let imageURL =
+        imageResources.appendingPathComponent("gemma_image_earthrise.jpg")
 
     @Test func gemma4_e4b_describesImage() async throws {
         let container = try await imageModels.vlmContainer(

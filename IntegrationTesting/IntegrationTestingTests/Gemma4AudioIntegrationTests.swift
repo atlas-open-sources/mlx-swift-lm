@@ -30,8 +30,15 @@ private let models = IntegrationTestModels(
     tokenizerLoader: #huggingFaceTokenizerLoader()
 )
 
-private let resources =
-    "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources"
+// Resolve Tests/MLXLMTests/Resources relative to this source file so the suite
+// runs on any clone / CI checkout, not just one developer's machine.
+// #filePath → .../IntegrationTesting/IntegrationTestingTests/<thisFile>.swift
+private let resources = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()  // IntegrationTestingTests/
+    .deletingLastPathComponent()  // IntegrationTesting/
+    .deletingLastPathComponent()  // repo root
+    .appendingPathComponent("Tests/MLXLMTests/Resources")
+    .path
 
 /// One speech clip + the distinctive words a correct transcription must recover.
 struct SpeechCase: Sendable, CustomStringConvertible {

@@ -131,6 +131,12 @@ let package = Package(
             resources: [
                 .process("Resources/1080p_30.mov"),
                 .process("Resources/audio_only.mov"),
+                .process("Resources/gemma_speech_test.wav"),
+                .process("Resources/gemma_speech_test2.wav"),
+                .process("Resources/gemma_speech_long.wav"),
+                .process("Resources/gemma_audio_librispeech.wav"),
+                .process("Resources/gemma_image_earthrise.jpg"),
+                .process("Resources/gemma_video_bbb.mp4"),
                 .process("Fixtures/gemma4_mel_reference.json"),
                 .process("Fixtures/gemma4_mel_alignment.json"),
                 .process("Fixtures/gemma4_token_alignment.json"),

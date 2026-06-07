@@ -22,14 +22,19 @@ private let models = IntegrationTestModels(
     tokenizerLoader: #huggingFaceTokenizerLoader()
 )
 
+// Resolve Tests/MLXLMTests/Resources relative to this source file so the suite
+// runs on any clone / CI checkout, not just one developer's machine.
+private let videoResources = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()  // IntegrationTestingTests/
+    .deletingLastPathComponent()  // IntegrationTesting/
+    .deletingLastPathComponent()  // repo root
+    .appendingPathComponent("Tests/MLXLMTests/Resources")
+
 @Suite(.serialized)
 struct Gemma4VideoIntegrationTests {
 
     // The repo already ships a small real clip for VLM tests.
-    private static let videoURL = URL(
-        fileURLWithPath:
-            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/1080p_30.mov"
-    )
+    private static let videoURL = videoResources.appendingPathComponent("1080p_30.mov")
 
     @Test func gemma4_e4b_describesVideo() async throws {
         let container = try await models.vlmContainer(
@@ -67,10 +72,7 @@ struct Gemma4VideoIntegrationTests {
 
     // Big Buck Bunny (Blender Foundation, CC-BY-3.0) — a real animated outdoor
     // scene. See Resources/FIXTURES_LICENSES.md.
-    private static let bbbURL = URL(
-        fileURLWithPath:
-            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_video_bbb.mp4"
-    )
+    private static let bbbURL = videoResources.appendingPathComponent("gemma_video_bbb.mp4")
 
     @Test func gemma4_e4b_describesVideo_bbb() async throws {
         let container = try await models.vlmContainer(
