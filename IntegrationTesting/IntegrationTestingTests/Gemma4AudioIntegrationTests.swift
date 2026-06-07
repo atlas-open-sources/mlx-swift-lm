@@ -74,13 +74,16 @@ struct Gemma4AudioIntegrationTests {
         // bridge (was 48 kHz → mel NaN), boa/eoa prompt format (bare tokens →
         // <pad>), WAV vs big-endian-AIFF fixture (garbage samples), and the
         // relative-position span (now past-only [maxPastHorizon…0], matching
-        // Google's reference). At least one more tower bug remains: the output is
-        // byte-identical before/after the rel-pos fix, i.e. the audio embeddings
-        // still don't influence generation — pointing at the subsample conv,
-        // lconv, or attention-chunking. Definitive next step: a numerical harness
-        // diffing each tower stage against VincentGourbin/gemma-4-swift-mlx (the
-        // known-good reference). Recovering the spoken words is the success signal;
-        // this flags the moment the tower is fixed.
+        // Google's reference). Ruled OUT vs VincentGourbin/gemma-4-swift-mlx
+        // (working): weights load (conv/proj sums non-zero), and ConformerBlock,
+        // FFN (residual_weight 0.5), attention scale/softcap/per_dim_scale,
+        // rel-shift, ClippableLinear, SubSampleConvProjection, and norms all match.
+        // rel-pos span is a no-op here (context_right=0). The remaining defect is a
+        // subtle numeric/dataflow bug in the Conformer, not visible statically —
+        // definitive next step is a stage-by-stage numerical diff of the two towers
+        // on identical mel input (needs a cross-package harness; pr-192 tower types
+        // are private). Recovering the spoken words is the success signal; this
+        // flags the moment the tower is fixed.
         withKnownIssue("Gemma 4 audio tower (pr-192) still produces incorrect embeddings; transcription not yet recovered") {
             let expectedWords = ["quick", "brown", "fox", "lazy", "dog", "river", "bank", "jump"]
             let hits = expectedWords.filter { lower.contains($0) }
