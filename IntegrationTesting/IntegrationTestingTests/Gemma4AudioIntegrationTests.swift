@@ -68,13 +68,20 @@ struct Gemma4AudioIntegrationTests {
 
         // KNOWN ISSUE (pr-192 incompleteness): the Conformer audio tower produces
         // finite-but-semantically-incorrect embeddings, so the model receives the
-        // audio tokens but cannot yet transcribe the speech. Its end-to-end audio
-        // test was a stub upstream, so the tower was never validated against the
-        // reference. Recovering the spoken words ("quick brown fox … lazy dog …
-        // river bank") is the deterministic success signal — wrapped here so the
-        // suite is green for the proven parts and will flag the moment the tower
-        // is fixed and this starts passing.
-        withKnownIssue("Gemma 4 audio tower (pr-192) produces incorrect embeddings; transcription not yet recovered") {
+        // audio tokens but cannot transcribe (it replies "you have not provided
+        // the audio"). pr-192's tower e2e test was a stub upstream, so the tower
+        // was never validated. Bugs fixed so far while chasing this: 16 kHz mono
+        // bridge (was 48 kHz → mel NaN), boa/eoa prompt format (bare tokens →
+        // <pad>), WAV vs big-endian-AIFF fixture (garbage samples), and the
+        // relative-position span (now past-only [maxPastHorizon…0], matching
+        // Google's reference). At least one more tower bug remains: the output is
+        // byte-identical before/after the rel-pos fix, i.e. the audio embeddings
+        // still don't influence generation — pointing at the subsample conv,
+        // lconv, or attention-chunking. Definitive next step: a numerical harness
+        // diffing each tower stage against VincentGourbin/gemma-4-swift-mlx (the
+        // known-good reference). Recovering the spoken words is the success signal;
+        // this flags the moment the tower is fixed.
+        withKnownIssue("Gemma 4 audio tower (pr-192) still produces incorrect embeddings; transcription not yet recovered") {
             let expectedWords = ["quick", "brown", "fox", "lazy", "dog", "river", "bank", "jump"]
             let hits = expectedWords.filter { lower.contains($0) }
             #expect(
