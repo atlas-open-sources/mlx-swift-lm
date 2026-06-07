@@ -64,4 +64,37 @@ struct Gemma4VideoIntegrationTests {
             "description lacks any visual cue from the clip: \(answer)"
         )
     }
+
+    // Big Buck Bunny (Blender Foundation, CC-BY-3.0) — a real animated outdoor
+    // scene. See Resources/FIXTURES_LICENSES.md.
+    private static let bbbURL = URL(
+        fileURLWithPath:
+            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_video_bbb.mp4"
+    )
+
+    @Test func gemma4_e4b_describesVideo_bbb() async throws {
+        let container = try await models.vlmContainer(
+            for: ModelConfiguration(id: "mlx-community/gemma-4-e4b-it-4bit"))
+        let session = ChatSession(
+            container, generateParameters: GenerateParameters(maxTokens: 150, temperature: 0))
+
+        let answer = try await session.respond(
+            to: "Describe what happens in this video in one or two sentences.",
+            images: [], videos: [.url(Self.bbbURL)], audios: [])
+
+        print("🎬 Gemma 4 BBB description:\n\(answer)")
+        let lower = answer.lowercased()
+        #expect(!lower.contains("<pad>"), "BBB description is a <pad> wall")
+        #expect(
+            answer.split(whereSeparator: { $0 == " " || $0 == "\n" }).count >= 8,
+            "BBB description too short: \(answer)")
+        // Animated outdoor nature scene (rabbit/animal, grass/trees, sky, cartoon).
+        let cues = [
+            "rabbit", "bunny", "animal", "creature", "animat", "cartoon", "character",
+            "grass", "tree", "forest", "field", "nature", "sky", "green", "outdoor",
+        ]
+        #expect(
+            cues.contains(where: { lower.contains($0) }),
+            "BBB description lacks any scene cue: \(answer)")
+    }
 }

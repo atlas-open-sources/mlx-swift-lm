@@ -84,4 +84,29 @@ struct Gemma4AudioIntegrationTests {
         print("🎙️ [e4b/\(clip.file)] \(answer)")
         assertRecovered(answer, clip)
     }
+
+    /// Real human speech (LibriSpeech, CC-BY-4.0). Gemma 4 E4B is a weak ASR model
+    /// — it does NOT transcribe verbatim (Whisper does; see FIXTURES_LICENSES.md),
+    /// so we assert only that the audio is genuinely *perceived*: it must not claim
+    /// "no audio", must not be a <pad> wall, and must recover a couple of content
+    /// words from the utterance ("Mister Quilter is the apostle of the middle
+    /// classes and we are glad to welcome his gospel"). This is the regression
+    /// guard for the audio path; numerical correctness is covered by the mel
+    /// alignment test. Verbatim transcription quality is a model property, not ours.
+    @Test func gemma4_e4b_perceivesRealSpeech() async throws {
+        let clip = SpeechCase(file: "gemma_audio_librispeech.wav", expected: [])
+        let answer = try await transcribe(model: "mlx-community/gemma-4-e4b-it-4bit", clip: clip)
+        print("🎙️ [e4b/librispeech] \(answer)")
+        let lower = answer.lowercased()
+        #expect(!lower.contains("<pad>"), "audio path regressed to a <pad> wall")
+        #expect(
+            !lower.contains("not provided") && !lower.contains("no audio")
+                && !lower.contains("haven't provided") && !lower.contains("have not provided"),
+            "model claims no audio — audio not reaching the model: \(answer)")
+        let contentWords = ["middle", "class", "welcome", "mr", "mister", "gospel", "apostle"]
+        let hits = contentWords.filter { lower.contains($0) }
+        #expect(
+            hits.count >= 2,
+            "did not perceive the real-speech content (matched \(hits) in: \(answer))")
+    }
 }

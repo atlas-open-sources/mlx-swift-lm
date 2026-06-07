@@ -26,9 +26,10 @@ private let imageModels = IntegrationTestModels(
 @Suite(.serialized)
 struct Gemma4ImageIntegrationTests {
 
+    // NASA "Earthrise" (Apollo 8) — public domain. See Resources/FIXTURES_LICENSES.md.
     private static let imageURL = URL(
         fileURLWithPath:
-            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_image_test.jpg"
+            "/Users/timapple/Documents/Guest/mlx-swift-lm/Tests/MLXLMTests/Resources/gemma_image_earthrise.jpg"
     )
 
     @Test func gemma4_e4b_describesImage() async throws {
@@ -44,9 +45,9 @@ struct Gemma4ImageIntegrationTests {
         print("🖼️ Gemma 4 image description:\n\(answer)")
         let lower = answer.lowercased()
         #expect(!lower.contains("<pad>"), "image path regressed to a <pad> wall")
-        // The photo is a red car in front of green foliage; require a real
+        // Earth rising over the lunar horizon against black space — require a real
         // visual cue so a generic reply can't pass.
-        let cues = ["car", "vehicle", "automobile", "red", "citro", "tree", "green", "parked"]
+        let cues = ["earth", "planet", "moon", "lunar", "space", "horizon", "blue", "black"]
         #expect(
             cues.contains(where: { lower.contains($0) }),
             "image description lacks any visual cue: \(answer)")
