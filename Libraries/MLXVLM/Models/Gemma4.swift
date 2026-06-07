@@ -2698,17 +2698,22 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
         // layer's KV). The slim QAT checkpoints already omit these; the non-QAT
         // checkpoints redundantly ship them. Drop those orphaned weights so both
         // load cleanly (otherwise `update(verify: .all)` rejects the extras).
+        // Scope strictly to the TEXT backbone (`language_model.model.layers.N…`).
+        // The vision and audio towers have their own `self_attn.k_proj/v_proj/k_norm`
+        // layers; matching on a bare `layers.N.self_attn.` would wrongly strip
+        // tower weights whose index crosses the text threshold.
         let textConfig = config.textConfiguration
         let firstKVSharedLayer = textConfig.hiddenLayers - textConfig.numKVSharedLayers
+        let textLayerPrefix = "language_model.model.layers."
         if textConfig.numKVSharedLayers > 0 {
             sanitized = sanitized.filter { key, _ in
-                guard key.contains(".self_attn."),
-                    key.hasSuffix(".k_proj.weight") || key.contains(".k_proj.")
-                        || key.hasSuffix(".v_proj.weight") || key.contains(".v_proj.")
-                        || key.contains(".k_norm.") || key.contains(".v_norm."),
-                    let range = key.range(of: #"layers\.(\d+)\."#, options: .regularExpression)
+                guard key.hasPrefix(textLayerPrefix), key.contains(".self_attn."),
+                    key.contains(".k_proj.") || key.contains(".v_proj.")
+                        || key.contains(".k_norm.") || key.contains(".v_norm.")
                 else { return true }
-                let digits = key[range].filter(\.isNumber)
+                // Parse the index immediately after the text-layer prefix.
+                let tail = key.dropFirst(textLayerPrefix.count)
+                let digits = tail.prefix { $0.isNumber }
                 guard let layerIdx = Int(digits) else { return true }
                 return layerIdx < firstKVSharedLayer
             }
