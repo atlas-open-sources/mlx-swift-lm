@@ -676,12 +676,17 @@ private final class Gemma4TextAttention: Module {
     let useKEqV: Bool
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
+    // KV projections/norms are absent on KV-shared layers: those layers reuse the
+    // KV computed by an earlier layer (Gemma 3n `num_kv_shared_layers`), so the
+    // slim QAT checkpoints omit these weights. Optional + only instantiated for
+    // non-shared layers so both the slim (QAT) and the redundant (non-QAT,
+    // ships unused KV weights) checkpoints load.
+    @ModuleInfo(key: "k_proj") var kProj: Linear?
     @ModuleInfo(key: "v_proj") var vProj: Linear?
     @ModuleInfo(key: "o_proj") var oProj: Linear
     @ModuleInfo(key: "q_norm") var qNorm: Gemma4RMSNormZeroShift
-    @ModuleInfo(key: "k_norm") var kNorm: Gemma4RMSNormZeroShift
-    @ModuleInfo(key: "v_norm") var vNorm: Gemma4RMSNormNoScale
+    @ModuleInfo(key: "k_norm") var kNorm: Gemma4RMSNormZeroShift?
+    @ModuleInfo(key: "v_norm") var vNorm: Gemma4RMSNormNoScale?
     @ModuleInfo var rope: OffsetLayer
 
     init(config: Gemma4TextConfiguration, layerIdx: Int) {
@@ -702,17 +707,21 @@ private final class Gemma4TextAttention: Module {
         self.isKVSharedLayer = layerIdx >= firstKVSharedLayer && firstKVSharedLayer > 0
 
         self._qProj.wrappedValue = Linear(config.hiddenSize, numHeads * headDim, bias: false)
-        self._kProj.wrappedValue = Linear(config.hiddenSize, numKVHeads * headDim, bias: false)
-        if !useKEqV {
-            self._vProj.wrappedValue = Linear(
-                config.hiddenSize, numKVHeads * headDim, bias: false)
-        }
         self._oProj.wrappedValue = Linear(numHeads * headDim, config.hiddenSize, bias: false)
         self._qNorm.wrappedValue = Gemma4RMSNormZeroShift(
             dimensions: headDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = Gemma4RMSNormZeroShift(
-            dimensions: headDim, eps: config.rmsNormEps)
-        self._vNorm.wrappedValue = Gemma4RMSNormNoScale(eps: config.rmsNormEps)
+        // KV-shared layers carry no K/V projections or norms — they consume the
+        // shared KV state from their source layer (see callAsFunction).
+        if !isKVSharedLayer {
+            self._kProj.wrappedValue = Linear(config.hiddenSize, numKVHeads * headDim, bias: false)
+            if !useKEqV {
+                self._vProj.wrappedValue = Linear(
+                    config.hiddenSize, numKVHeads * headDim, bias: false)
+            }
+            self._kNorm.wrappedValue = Gemma4RMSNormZeroShift(
+                dimensions: headDim, eps: config.rmsNormEps)
+            self._vNorm.wrappedValue = Gemma4RMSNormNoScale(eps: config.rmsNormEps)
+        }
 
         let ropeKey = isSliding ? "sliding_attention" : "full_attention"
         let ropeConfig = config.ropeParameters[ropeKey]
@@ -747,6 +756,10 @@ private final class Gemma4TextAttention: Module {
             kvState = sharedKV
         } else {
             currentOffset = cache?.offset ?? 0
+            // Reached only by non-shared layers, which always have K/V modules.
+            guard let kProj, let kNorm, let vNorm else {
+                fatalError("Gemma4 KV-shared layer \(layerIdx) reached the KV-compute path without a shared KV state")
+            }
             var keys = kProj(x).reshaped(batch, length, numKVHeads, headDim)
             var values =
                 if useKEqV {
@@ -1082,7 +1095,6 @@ private final class Gemma4TextBackbone: Module {
         }
         let finalPerLayerInputs = projectPerLayerInputs(h0, perLayerInputs: processedPerLayerInputs)
 
-        let hasExplicitCache = cache != nil
         let localCache =
             cache ?? Array(repeating: nil as KVCache?, count: max(firstKVSharedLayerIdx, 1))
         let fullMask: MLXFast.ScaledDotProductAttentionMaskMode
@@ -1130,9 +1142,12 @@ private final class Gemma4TextBackbone: Module {
                 mask: layerMask,
                 cache: layerCache,
                 perLayerInput: layerInput,
-                sharedKV: hasExplicitCache && idx >= firstKVSharedLayerIdx
+                // KV-shared layers have no K/V weights of their own, so they must
+                // always consume the source layer's KV computed earlier this pass
+                // (whether or not an explicit cache is in play).
+                sharedKV: idx >= firstKVSharedLayerIdx
                     ? intermediates[sourceIdx].kv : nil,
-                offset: hasExplicitCache && idx >= firstKVSharedLayerIdx
+                offset: idx >= firstKVSharedLayerIdx
                     ? intermediates[sourceIdx].offset : nil
             )
             h = output
@@ -2676,6 +2691,26 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                     && !key.contains("input_max")
                     && !key.contains("output_min")
                     && !key.contains("output_max")
+            }
+        }
+
+        // KV-shared layers have no K/V projections/norms (they reuse an earlier
+        // layer's KV). The slim QAT checkpoints already omit these; the non-QAT
+        // checkpoints redundantly ship them. Drop those orphaned weights so both
+        // load cleanly (otherwise `update(verify: .all)` rejects the extras).
+        let textConfig = config.textConfiguration
+        let firstKVSharedLayer = textConfig.hiddenLayers - textConfig.numKVSharedLayers
+        if textConfig.numKVSharedLayers > 0 {
+            sanitized = sanitized.filter { key, _ in
+                guard key.contains(".self_attn."),
+                    key.hasSuffix(".k_proj.weight") || key.contains(".k_proj.")
+                        || key.hasSuffix(".v_proj.weight") || key.contains(".v_proj.")
+                        || key.contains(".k_norm.") || key.contains(".v_norm."),
+                    let range = key.range(of: #"layers\.(\d+)\."#, options: .regularExpression)
+                else { return true }
+                let digits = key[range].filter(\.isNumber)
+                guard let layerIdx = Int(digits) else { return true }
+                return layerIdx < firstKVSharedLayer
             }
         }
 
