@@ -97,6 +97,33 @@ if estimated > budget: trim/degrade (fewer frames / shorter audio / drop an item
 - Thermal-adaptive via runtime headroom read.
 - UX: trim video to `frameCap / fps` seconds; live "this needs ~N tokens, device supports ~M" messaging; combined handled uniformly by the token math.
 
+## Entitlement escalation experiment (can we get past ~6 GB?)
+
+We enabled the two extra memory capabilities on the App ID and re-measured the
+ceiling on iPhone 17 Pro Max (12 GB):
+
+| Entitlements | Ceiling | Notes |
+|---|---|---|
+| `increased-memory-limit` only (production) | **6144 MB** | baseline; same on 8 GB iPhone 16 |
+| + `extended-virtual-addressing` | **6144 MB** | **no change** — EVA is address-space only, not a jetsam-limit raise |
+| + `increased-debugging-memory-limit` | **6656 MB** | +512 MB, but **debug-only** (Xcode strips from release) |
+
+With the 6656 MB debug ceiling, **16-frame video (1363 tok) became robust** — 2
+memory warnings vs 92–112 → crash at 6144. So the headroom genuinely helps; we just
+can't ship it.
+
+**Conclusions:**
+- There is **no shippable way past ~6 GB per app on iPhone today**, regardless of
+  device RAM (8 GB and 12 GB both cap at 6144 MB). `extended-virtual-addressing` —
+  the commonly-suggested fix (e.g. mlc-ai/mlc-llm#1260) — does **not** raise the
+  jetsam ceiling for this workload.
+- The hardware *can* do more (6656 MB in debug), so the cap is an **artificial OS
+  policy, not silicon**. Worth raising with Apple: "increased-memory-limit should
+  scale with device RAM on 12 GB iPhones." (Ask in the upstream PR / a Feedback.)
+- Do **not** enable `increased-debugging-memory-limit` for routine dev testing: the
+  higher debug ceiling masks production OOMs. Validate the gate at the 6144 MB prod
+  ceiling. (The App ID keeps both capabilities for deliberate, isolated profiling.)
+
 ## Throughput reference (64 MB cache)
 iPhone 17 ≈ 29 tok/s · iPhone 16 ≈ 15 tok/s (identical memory budget; 17 ~2× faster compute).
 
