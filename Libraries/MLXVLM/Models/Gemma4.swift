@@ -2916,12 +2916,17 @@ public struct Gemma4Processor: UserInputProcessor {
             // keeps the full config. GEMMA4_VIDEO_MAX_FRAMES overrides the cap for
             // on-device memory profiling (sweep frame counts without rebuilding).
             #if os(iOS)
+            // 8 frames (≈4 s at 2 fps) is the robust iOS ceiling: it survives
+            // sustained thermal stress on iPhone 16/17 Pro Max, whereas 16 frames
+            // crashes when the device is hot (per investigation/gemma4-ios-memory.md).
+            // The app's MultimodalBudget gate also enforces this; this is the engine
+            // safety net. GEMMA4_VIDEO_MAX_FRAMES overrides it for profiling.
             let iosFrameCap: Int
             if let raw = ProcessInfo.processInfo.environment["GEMMA4_VIDEO_MAX_FRAMES"],
                 let override = Int(raw), override > 0 {
                 iosFrameCap = override
             } else {
-                iosFrameCap = 4
+                iosFrameCap = 8
             }
             let effectiveMaxFrames = min(config.videoMaxFrames, iosFrameCap)
             #else
