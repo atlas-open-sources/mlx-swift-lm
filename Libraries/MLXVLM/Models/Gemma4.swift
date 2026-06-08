@@ -2696,14 +2696,24 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 pixelValuesVideos: videoPixels,
                 audioFeatures: audioFeatures,
                 audioMask: input.audio?.mask)
+            // GEMMA4_LOW_CACHE: reclaim the MLX GPU buffer cache right before the
+            // prefill forward. The loaded model + a ~512 MB cache leaves little of
+            // the ~6 GB iOS ceiling for the prefill attention; dropping the cache
+            // here buys headroom for more tokens/frames. NB: do NOT eval(result)
+            // here — forcing the whole prefill graph to materialize at once spikes
+            // peak memory and defeats MLX's lazy interleave with generation.
+            #if os(iOS)
+            if ProcessInfo.processInfo.environment["GEMMA4_LOW_CACHE"] == "1" {
+                MLX.GPU.set(cacheLimit: 32 * 1024 * 1024)
+                gemma4MemSnapshot("prepare:afterCacheReclaim")
+            }
+            #endif
             let result = languageModel(
                 nil,
                 cache: convertedCache,
                 inputsEmbeds: inputsEmbeds,
                 perLayerInputs: perLayerInputs
             )
-            eval(result)
-            gemma4MemSnapshot("prepare:afterPrefillForward")
             return .logits(result)
         } else {
             let result = languageModel(input.text.tokens, cache: convertedCache)
