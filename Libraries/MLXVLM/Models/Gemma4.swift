@@ -6,6 +6,37 @@ import MLXNN
 
 // Based on https://github.com/Blaizzy/mlx-vlm/tree/main/mlx_vlm/models/gemma4
 
+#if os(iOS)
+import Darwin
+
+/// Diagnostic memory snapshot (iOS only). `os_proc_available_memory()` returns
+/// the bytes this process can still allocate before the kernel jetsam-kills it —
+/// i.e. the *real* ceiling, which on iOS is the per-app dirty-memory limit (raised
+/// by `com.apple.developer.kernel.increased-memory-limit`), NOT the device's RAM.
+/// `phys_footprint` is the current charged footprint. Gated behind GEMMA4_MEM_LOG
+/// so it's free unless we're profiling. Logging it at each prefill stage tells us
+/// exactly where the multimodal spike lands relative to the ceiling.
+func gemma4MemSnapshot(_ label: String) {
+    guard ProcessInfo.processInfo.environment["GEMMA4_MEM_LOG"] == "1" else { return }
+    let availMB = Double(os_proc_available_memory()) / 1_048_576
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    let footMB = kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : -1
+    let ceilingMB = footMB + availMB
+    print(
+        "🧠 [g4mem] \(label): footprint=\(Int(footMB))MB "
+            + "availBeforeJetsam=\(Int(availMB))MB ceiling≈\(Int(ceilingMB))MB")
+}
+#else
+func gemma4MemSnapshot(_ label: String) {}
+#endif
+
 private enum Gemma4Error: LocalizedError {
     case imageTokenCountMismatch(expectedVisionTokens: Int, actualPromptTokens: Int)
     case videoTokenCountMismatch(expectedVisionTokens: Int, actualPromptTokens: Int)
@@ -2538,6 +2569,8 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
             perLayerInputs = languageModel.model.getPerLayerInputs(perLayerTokens)
         }
 
+        gemma4MemSnapshot("embeds:textTokensReady")
+
         // Scatter vision features into placeholder positions
         if let pixelValues {
             var imageFeatures = visionTower(pixelValues)
@@ -2560,6 +2593,7 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 mask: imageMaskExpanded,
                 source: imageFeatures
             )
+            gemma4MemSnapshot("embeds:afterImageScatter")
         }
 
         if let pixelValuesVideos {
@@ -2590,6 +2624,7 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 // attention mask) can be released before the next chunk.
                 eval(feats)
                 chunkFeatures.append(feats)
+                gemma4MemSnapshot("embeds:videoChunk[\(idx)..<\(end)]")
                 idx = end
             }
             let videoFeatures =
@@ -2614,6 +2649,7 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 mask: videoMaskExpanded,
                 source: videoFeatures
             )
+            gemma4MemSnapshot("embeds:afterVideoScatter")
         }
 
         // Scatter audio features into <|audio|> placeholder positions
@@ -2638,8 +2674,10 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 mask: tokenMaskExpanded,
                 source: audioEmb
             )
+            gemma4MemSnapshot("embeds:afterAudioScatter")
         }
 
+        gemma4MemSnapshot("embeds:done")
         return (inputsEmbeds, perLayerInputs)
     }
 
@@ -2651,6 +2689,7 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
         let videoPixels = input.video?.pixels
         let audioFeatures = input.audio?.features
         if imagePixels != nil || videoPixels != nil || audioFeatures != nil {
+            gemma4MemSnapshot("prepare:start tokens=\(input.text.tokens.dim(-1))")
             let (inputsEmbeds, perLayerInputs) = try getInputEmbeddings(
                 inputIds: input.text.tokens,
                 pixelValues: imagePixels,
@@ -2663,6 +2702,8 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 inputsEmbeds: inputsEmbeds,
                 perLayerInputs: perLayerInputs
             )
+            eval(result)
+            gemma4MemSnapshot("prepare:afterPrefillForward")
             return .logits(result)
         } else {
             let result = languageModel(input.text.tokens, cache: convertedCache)
@@ -2862,9 +2903,17 @@ public struct Gemma4Processor: UserInputProcessor {
             // The default 16-frame sampling (×~280 vision tokens/frame) overruns
             // an iPhone's per-app memory and gets the app jetsam-killed mid-prefill.
             // Cap frames on iOS so a video fits alongside the ~4 GB model; macOS
-            // keeps the full config.
+            // keeps the full config. GEMMA4_VIDEO_MAX_FRAMES overrides the cap for
+            // on-device memory profiling (sweep frame counts without rebuilding).
             #if os(iOS)
-            let effectiveMaxFrames = min(config.videoMaxFrames, 4)
+            let iosFrameCap: Int
+            if let raw = ProcessInfo.processInfo.environment["GEMMA4_VIDEO_MAX_FRAMES"],
+                let override = Int(raw), override > 0 {
+                iosFrameCap = override
+            } else {
+                iosFrameCap = 4
+            }
+            let effectiveMaxFrames = min(config.videoMaxFrames, iosFrameCap)
             #else
             let effectiveMaxFrames = config.videoMaxFrames
             #endif
