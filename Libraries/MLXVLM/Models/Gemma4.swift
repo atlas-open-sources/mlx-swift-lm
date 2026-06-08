@@ -2859,11 +2859,20 @@ public struct Gemma4Processor: UserInputProcessor {
             var perVideoTimestamps: [[Double]] = []
             var perVideoFrameCount: [Int] = []
 
+            // The default 16-frame sampling (×~280 vision tokens/frame) overruns
+            // an iPhone's per-app memory and gets the app jetsam-killed mid-prefill.
+            // Cap frames on iOS so a video fits alongside the ~4 GB model; macOS
+            // keeps the full config.
+            #if os(iOS)
+            let effectiveMaxFrames = min(config.videoMaxFrames, 4)
+            #else
+            let effectiveMaxFrames = config.videoMaxFrames
+            #endif
             for video in input.videos {
                 let processedFrames = try await MediaProcessing.asProcessedSequence(
                     video,
                     targetFPS: { _ in Double(config.videoFps) },
-                    maxFrames: config.videoMaxFrames
+                    maxFrames: effectiveMaxFrames
                 ) { frame in
                     let processed = processVideoFrame(frame.frame, processing: input.processing)
                     return VideoFrame(frame: processed, timeStamp: frame.timeStamp)
