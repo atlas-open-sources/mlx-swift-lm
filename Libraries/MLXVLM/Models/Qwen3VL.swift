@@ -1034,6 +1034,11 @@ enum Qwen3VLLanguage {
             var positionIds = positionIds
 
             if positionIds == nil {
+                // Qwen3-VL uses MRoPE position ids with three positional axes.
+                // A batched cache can expose per-row scalar offsets, but this
+                // path must construct full per-row 3D position ids and slice
+                // the attention mask consistently. Keep the existing scalar
+                // path until that model-specific restructuring is implemented.
                 let offset = cache?.offset ?? 0
                 kvSequenceLength += offset + 1
                 var base = MLXArray(stride(from: offset, to: offset + length, by: 1)).asType(.int32)
@@ -1272,6 +1277,9 @@ enum Qwen3VLLanguage {
                     } else if let cache, state[ropeDeltasKey] == nil {
                         let batch = inputEmbeddings!.dim(0)
                         let seqLength = inputEmbeddings!.dim(1)
+                        // Initial text-embedding decode fallback still builds
+                        // scalar 3D MRoPE position ids. Mixed-offset batching
+                        // needs per-row offsets in this state path too.
                         let currentOffset = cache.first?.offset ?? 0
 
                         var base = MLXArray(0 ..< seqLength).asType(.int32)
@@ -1286,6 +1294,9 @@ enum Qwen3VLLanguage {
                     let batch = (inputIds ?? inputEmbeddings!).dim(0)
                     let seqLength = (inputIds ?? inputEmbeddings!).dim(1)
 
+                    // Resumed MRoPE decode combines a scalar cache offset with
+                    // rope deltas. This must become per-row before Qwen3-VL can
+                    // safely join mixed-offset decode batches.
                     let lastCacheOffset = cache.last?.offset ?? 0
 
                     var delta = MLXArray(lastCacheOffset).asType(.int32) + ropeDeltas.asType(.int32)

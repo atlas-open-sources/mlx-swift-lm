@@ -352,9 +352,9 @@ private enum Language {
             keys = keys.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
             values = values.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
 
-            let offset = cache?.offset ?? 0
-            queries = rope(queries, offset: offset)
-            keys = rope(keys, offset: offset)
+            let offset = cache?.ropeOffset
+            queries = applyRotaryPosition(rope, to: queries, offset: offset)
+            keys = applyRotaryPosition(rope, to: keys, offset: offset)
 
             queries = queries * attentionScale
 
@@ -473,6 +473,10 @@ private enum Language {
             }
 
             let cache = cache ?? []
+            // Ministral3/Mistral3 VLM derives llama4 attention scaling from a
+            // scalar cache offset before entering per-layer attention. Batched
+            // decode needs per-row scaling values in addition to per-row RoPE
+            // offsets, so keep this scalar path serialized for now.
             let offset = cache.first?.offset ?? 0
 
             let faMask = createAttentionMask(h: h, cache: cache[faIndex])

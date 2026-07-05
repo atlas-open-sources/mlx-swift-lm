@@ -394,6 +394,11 @@ enum Qwen35Language {
             var positionIds = positionIds
 
             if positionIds == nil {
+                // Qwen3.5 VL uses MRoPE position ids with three positional axes.
+                // A batched cache can expose per-row scalar offsets, but this
+                // path must construct full per-row 3D position ids and slice
+                // the attention mask consistently. Keep the existing scalar
+                // path until that model-specific restructuring is implemented.
                 let offset = cache?.offset ?? 0
                 kvSeqLen += offset + 1
                 var base = MLXArray(stride(from: offset, to: offset + L, by: 1)).asType(.int32)
@@ -805,6 +810,9 @@ enum Qwen35Language {
 
             var cacheOffset = 0
             if let cache, let faCache = cache[model.faIdx] {
+                // Qwen3.5 VL resumes 3D MRoPE from the full-attention cache's
+                // scalar offset. Mixed-offset batching needs a per-row offset
+                // vector threaded into the position-id construction below.
                 cacheOffset = faCache.offset
             }
 

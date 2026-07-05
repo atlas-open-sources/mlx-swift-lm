@@ -152,9 +152,9 @@ private enum Language {
                 keys = kEmbed
             } else {
                 // Simple sequential RoPE for autoregressive generation
-                let offset = cache?.offset ?? 0
-                queries = rotaryEmbedding(queries, offset: offset)
-                keys = rotaryEmbedding(keys, offset: offset)
+                let offset = cache?.ropeOffset
+                queries = applyRotaryPosition(rotaryEmbedding, to: queries, offset: offset)
+                keys = applyRotaryPosition(rotaryEmbedding, to: keys, offset: offset)
             }
 
             let output = attentionWithCacheUpdate(
@@ -293,6 +293,10 @@ private enum Language {
             {
                 let batch = input.dim(0)
                 let seqLength = input.dim(1)
+                // Qwen2.5-VL resumes MRoPE by combining cached scalar offsets
+                // with per-request rope deltas. Mixed-offset batching needs
+                // per-row cache offsets threaded through this 3D position-id
+                // construction before this path can use BatchPositionedKVCache.
                 let lastCacheOffset = cache.last?.offset ?? 0
 
                 var delta = MLXArray(lastCacheOffset).asType(.int32) + ropeDeltas.asType(.int32)

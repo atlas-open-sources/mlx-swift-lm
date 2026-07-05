@@ -807,6 +807,11 @@ final class Gemma4TextAttention: Module {
                 fatalError(
                     "Gemma4 attention called without sharedKV on a kvSharedOnly layer")
             }
+            // Gemma4 shares K/V across later layers and threads this scalar
+            // offset into those shared-KV consumers. Supporting batched offsets
+            // here requires carrying RoPEOffset through the shared state, not a
+            // local cache.offset swap. Keep this scalar path until that broader
+            // restructuring is implemented.
             currentOffset = cache?.offset ?? 0
             var keys = kProj(x).reshaped(batch, length, numKVHeads, headDim)
             var values =
