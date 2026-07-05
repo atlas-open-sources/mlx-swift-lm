@@ -1,10 +1,32 @@
 import Foundation
 import MLX
-import MLXLLM
 import MLXLMCommon
 import Testing
+@testable import MLXLLM
 
 struct Gemma4TextTests {
+    @Test("Gemma4Text sanitize strips only shared-layer KV weights")
+    func sanitizeDropsSharedTailKVWeights() throws {
+        let config = try Self.configuration(attentionKEqV: false)
+
+        #expect(
+            !Gemma4TextModel.isRedundantTextKVSharedWeight(
+                "language_model.model.layers.0.self_attn.k_proj.weight",
+                textConfig: config))
+        #expect(
+            Gemma4TextModel.isRedundantTextKVSharedWeight(
+                "language_model.model.layers.1.self_attn.k_proj.weight",
+                textConfig: config))
+        #expect(
+            Gemma4TextModel.isRedundantTextKVSharedWeight(
+                "model.layers.1.self_attn.v_norm.weight",
+                textConfig: config))
+        #expect(
+            !Gemma4TextModel.isRedundantTextKVSharedWeight(
+                "vision_tower.layers.1.self_attn.k_proj.weight",
+                textConfig: config))
+    }
+
     @Test("Gemma4Text handles quantized KV cache in shared full attention")
     func quantizedKVCacheSupportsSharedFullAttention() throws {
         let model = Gemma4TextModel(try Self.configuration(attentionKEqV: false))

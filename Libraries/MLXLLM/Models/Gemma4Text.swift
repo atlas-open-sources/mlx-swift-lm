@@ -206,17 +206,17 @@ private class Gemma4Attention: Module {
     let scale: Float
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
+    @ModuleInfo(key: "k_proj") var kProj: Linear?
     @ModuleInfo(key: "v_proj") var vProj: Linear?
     @ModuleInfo(key: "o_proj") var oProj: Linear
 
     @ModuleInfo(key: "q_norm") var qNorm: RMSNorm
-    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
-    @ModuleInfo(key: "v_norm") var vNorm: RMSNormNoScale
+    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm?
+    @ModuleInfo(key: "v_norm") var vNorm: RMSNormNoScale?
 
     @ModuleInfo var rope: RoPELayer
 
-    init(_ config: Gemma4TextConfiguration, layerIdx: Int) {
+    init(_ config: Gemma4TextConfiguration, layerIdx: Int, kvSharedOnly: Bool = false) {
         self.config = config
         self.layerIdx = layerIdx
         self.layerType = config.layerTypes[layerIdx]
@@ -240,15 +240,17 @@ private class Gemma4Attention: Module {
         self.scale = 1.0
 
         self._qProj.wrappedValue = Linear(dim, nHeads * effectiveHeadDim, bias: false)
-        self._kProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
-        if !useKeqV {
-            self._vProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
+        if !kvSharedOnly {
+            self._kProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
+            if !useKeqV {
+                self._vProj.wrappedValue = Linear(dim, nKvHeads * effectiveHeadDim, bias: false)
+            }
+            self._kNorm.wrappedValue = RMSNorm(dimensions: effectiveHeadDim, eps: config.rmsNormEps)
+            self._vNorm.wrappedValue = RMSNormNoScale(eps: config.rmsNormEps)
         }
         self._oProj.wrappedValue = Linear(nHeads * effectiveHeadDim, dim, bias: false)
 
         self._qNorm.wrappedValue = RMSNorm(dimensions: effectiveHeadDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: effectiveHeadDim, eps: config.rmsNormEps)
-        self._vNorm.wrappedValue = RMSNormNoScale(eps: config.rmsNormEps)
 
         // RoPE: sliding uses default, full uses proportional with partial rotation
         if isSliding {
@@ -287,6 +289,9 @@ private class Gemma4Attention: Module {
             // KV-shared layers use pre-computed KV from an earlier layer.
             kvState = sharedKV
         } else {
+            guard let kProj, let kNorm, let vNorm else {
+                fatalError("Gemma4 attention called without sharedKV on a kvSharedOnly layer")
+            }
             let kRaw = kProj(x).reshaped(B, L, nKvHeads, effectiveHeadDim)
             var k = kNorm(kRaw)
             k = k.transposed(0, 2, 1, 3)
@@ -412,7 +417,7 @@ private class Gemma4DecoderLayer: Module {
     // Per-layer scalar
     @ModuleInfo(key: "layer_scalar") var layerScalar: MLXArray
 
-    init(_ config: Gemma4TextConfiguration, layerIdx: Int) {
+    init(_ config: Gemma4TextConfiguration, layerIdx: Int, kvSharedOnly: Bool = false) {
         // _addRMSNorm bakes kRMSEps into its compiled graph. Catch a future
         // checkpoint that ships a different rms_norm_eps before it reaches
         // the fused path with the wrong constant.
@@ -426,7 +431,8 @@ private class Gemma4DecoderLayer: Module {
         self.layerType = config.layerTypes[layerIdx]
         self.hiddenSizePerLayerInput = config.hiddenSizePerLayerInput
 
-        self._selfAttn.wrappedValue = Gemma4Attention(config, layerIdx: layerIdx)
+        self._selfAttn.wrappedValue = Gemma4Attention(
+            config, layerIdx: layerIdx, kvSharedOnly: kvSharedOnly)
         self._mlp.wrappedValue = Gemma4MLP(config, layerIdx: layerIdx)
 
         self._inputLayernorm.wrappedValue = RMSNorm(
@@ -516,6 +522,11 @@ private class Gemma4TextModelInner: Module {
     let previousKvs: [Int]
     let firstKvSharedLayerIdx: Int
 
+    static func isKVSharedOnlyLayer(_ layerIdx: Int, textConfig: Gemma4TextConfiguration) -> Bool {
+        let firstKVSharedLayer = textConfig.numHiddenLayers - textConfig.numKvSharedLayers
+        return textConfig.numKvSharedLayers > 0 && layerIdx >= firstKVSharedLayer
+    }
+
     init(_ config: Gemma4TextConfiguration) {
         self.config = config
         self.embedScale = Float(config.hiddenSize).squareRoot()
@@ -524,7 +535,9 @@ private class Gemma4TextModelInner: Module {
         self._embedTokens.wrappedValue = Embedding(
             embeddingCount: config.vocabSize, dimensions: config.hiddenSize)
         self._layers.wrappedValue = (0 ..< config.numHiddenLayers).map {
-            Gemma4DecoderLayer(config, layerIdx: $0)
+            Gemma4DecoderLayer(
+                config, layerIdx: $0,
+                kvSharedOnly: Self.isKVSharedOnlyLayer($0, textConfig: config))
         }
         self._norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
 
@@ -702,9 +715,33 @@ public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
             {
                 continue
             }
+            if Self.isRedundantTextKVSharedWeight(k, textConfig: config) {
+                continue
+            }
             sanitized[k] = v
         }
         return sanitized
+    }
+
+    static func isRedundantTextKVSharedWeight(
+        _ key: String, textConfig: Gemma4TextConfiguration
+    ) -> Bool {
+        guard textConfig.numKvSharedLayers > 0,
+            key.contains(".self_attn."),
+            key.contains(".k_proj.") || key.contains(".v_proj.")
+                || key.contains(".k_norm.") || key.contains(".v_norm.")
+        else { return false }
+
+        let prefixes = ["language_model.model.layers.", "model.layers."]
+        guard let prefix = prefixes.first(where: { key.hasPrefix($0) }) else {
+            return false
+        }
+
+        let firstKVSharedLayer = textConfig.numHiddenLayers - textConfig.numKvSharedLayers
+        let tail = key.dropFirst(prefix.count)
+        let digits = tail.prefix { $0.isNumber }
+        guard let layerIdx = Int(digits) else { return false }
+        return layerIdx >= firstKVSharedLayer
     }
 
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
