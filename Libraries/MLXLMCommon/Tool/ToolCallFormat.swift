@@ -110,6 +110,10 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     /// Example: `<|channel|>commentary to=functions.get_weather<|message|>{"location": "Tokyo"}<|call|>`
     case gptOSS = "gpt_oss"
 
+    /// Meta Muse ATEM function-call protocol.
+    /// Example: `<atem:invoke name="f"><atem:parameter name="k">v</atem:parameter></atem:invoke>`
+    case atem
+
     // MARK: - Factory Methods
 
     /// Create the appropriate parser for this format.
@@ -142,6 +146,8 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             return Llama3ToolCallParser()
         case .gptOSS:
             return JSONToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        case .atem:
+            return ATEMToolCallParser()
         }
     }
 
@@ -168,6 +174,7 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
                 tokenizer: tokenizer, format: self, tools: tools, stopStrings: stopStrings)
 
         case .json, .lfm2, .xmlFunction, .glm4, .gemma, .gemma4, .kimiK2, .minimaxM2,
+            .atem,
             .mistral, .llama3:
             return StandardTokenStreamDecoder(
                 tokenizer: tokenizer, format: self, tools: tools, stopStrings: stopStrings)
@@ -188,7 +195,8 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
         switch self {
         case .gptOSS:
             return HarmonyToolRestartRule(tokenizer: tokenizer).map { [$0] } ?? []
-        case .json, .lfm2, .xmlFunction, .glm4, .gemma, .gemma4, .kimiK2, .minimaxM2, .mistral,
+        case .json, .lfm2, .xmlFunction, .glm4, .gemma, .gemma4, .kimiK2, .minimaxM2, .atem,
+            .mistral,
             .llama3:
             return []
         }
