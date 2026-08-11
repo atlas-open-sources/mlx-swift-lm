@@ -266,7 +266,11 @@ public struct MuseGlimmerProcessor: UserInputProcessor {
         let processed = try input.images.map {
             try preprocess($0.asCIImage(), processing: input.processing)
         }
-        let placeholder = tokenizer.encode(text: "<|patch|>")
+        // Prompt fragments must not request tokenizer-level BOS/EOS insertion.
+        // Muse's tokenizer has a BOS token, so the default `encode(text:)`
+        // produces `[BOS, patch]`, which cannot match the single patch marker
+        // emitted inside the already-templated prompt.
+        let placeholder = tokenizer.encode(text: "<|patch|>", addSpecialTokens: false)
         let placeholderRanges = promptTokens.ranges(of: placeholder)
         guard placeholderRanges.count == processed.count else {
             throw VLMError.processing(
@@ -283,7 +287,8 @@ public struct MuseGlimmerProcessor: UserInputProcessor {
                 "<|image_start|>"
                 + Array(repeating: "<|patch|>", count: patchCount).joined()
                 + "<|image_end|>"
-            expandedTokens.append(contentsOf: tokenizer.encode(text: replacement))
+            expandedTokens.append(
+                contentsOf: tokenizer.encode(text: replacement, addSpecialTokens: false))
             cursor = range.upperBound
         }
         expandedTokens.append(contentsOf: promptTokens[cursor...])

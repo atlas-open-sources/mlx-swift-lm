@@ -1,5 +1,6 @@
 // Copyright © 2026 Apple Inc.
 
+import CoreImage
 import Foundation
 import MLX
 import MLXLMCommon
@@ -123,6 +124,30 @@ struct MuseGlimmerTests {
                 == (28, 56))
     }
 
+    @Test("Muse Glimmer image markers do not inherit tokenizer BOS tokens")
+    func processorImageMarkersExcludeSpecialTokens() async throws {
+        let data = Data(
+            """
+            {"processor_class":"MuseGlimmerProcessor","image_processor":{
+              "image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],
+              "max_image_tokens":4,"merge_size":2,"patch_size":14,
+              "temporal_patch_size":2}}
+            """.utf8)
+        let config = try JSONDecoder().decode(MuseGlimmerProcessorConfiguration.self, from: data)
+        let processor = MuseGlimmerProcessor(config, tokenizer: MuseGlimmerTestTokenizer())
+        let image = CIImage(color: .white).cropped(
+            to: CGRect(x: 0, y: 0, width: 28, height: 28))
+
+        let input = try await processor.prepare(
+            input: UserInput(prompt: "describe", images: [.ciImage(image)]))
+
+        #expect(input.text.tokens.asArray(Int32.self) == [1, 8, 7, 9, 2])
+        let frame = try #require(input.image?.frames?.first)
+        #expect(frame.t == 1)
+        #expect(frame.h == 2)
+        #expect(frame.w == 2)
+    }
+
     @Test("Muse Glimmer checkpoint prefixes map to Swift modules")
     func sanitization() throws {
         let model = MuseGlimmer(try configuration())
@@ -137,5 +162,39 @@ struct MuseGlimmerTests {
         #expect(weights["vision_tower.ln_pre.weight"] != nil)
         #expect(weights["language_model.lm_head.weight"] != nil)
         #expect(!weights.keys.contains { $0.contains("rotary_emb.inv_freq") })
+    }
+}
+
+private struct MuseGlimmerTestTokenizer: Tokenizer {
+    let bosToken: String? = "<bos>"
+    let eosToken: String? = nil
+    let unknownToken: String? = nil
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        let tokens: [Int]
+        switch text {
+        case "<|patch|>":
+            tokens = [7]
+        case "<|image_start|><|patch|><|image_end|>":
+            tokens = [8, 7, 9]
+        default:
+            tokens = [42]
+        }
+        return addSpecialTokens ? [99] + tokens : tokens
+    }
+
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map(String.init).joined(separator: " ")
+    }
+
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { String(id) }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        [1, 7, 2]
     }
 }
