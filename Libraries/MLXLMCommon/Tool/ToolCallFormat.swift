@@ -102,6 +102,9 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     /// Example: `<|python_tag|>{ "name": "func", "parameters": {...} }`
     case llama3
 
+    /// Meta Muse ATEM function-call protocol.
+    /// Example: `<atem:invoke name="f"><atem:parameter name="k">v</atem:parameter></atem:invoke>`
+    case atem
     // MARK: - Factory Methods
 
     /// Create the appropriate parser for this format.
@@ -132,6 +135,8 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             return MistralToolCallParser()
         case .llama3:
             return Llama3ToolCallParser()
+        case .atem:
+            return ATEMToolCallParser()
         }
     }
 
@@ -158,6 +163,10 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     /// - Returns: The appropriate `ToolCallFormat`, or `nil` to use the default format
     public static func infer(from modelType: String, configData: Data? = nil) -> ToolCallFormat? {
         let type = modelType.lowercased()
+
+        if type == "muse_glimmer" {
+            return .atem
+        }
 
         // Llama family (need secondary signal for Llama 3 vs 1/2)
         if type == "llama" {

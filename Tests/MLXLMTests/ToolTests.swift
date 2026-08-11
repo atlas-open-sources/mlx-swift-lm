@@ -1190,4 +1190,45 @@ struct ToolTests {
         #expect(second.function.name == "get_time")
         #expect(second.function.arguments["timezone"] == .string("UTC"))
     }
+
+    @Test("ATEM parser preserves strings and decodes JSON values")
+    func atemParserValues() throws {
+        let parser = ATEMToolCallParser()
+        let calls = parser.parseEOS(
+            """
+            <atem:function_calls>
+            <atem:invoke name="weather.get_weather">
+            <atem:parameter name="city">New York</atem:parameter>
+            <atem:parameter name="days">3</atem:parameter>
+            <atem:parameter name="detailed">true</atem:parameter>
+            <atem:parameter name="filters">{"units":"metric"}</atem:parameter>
+            <atem:parameter name="note">  keep surrounding spaces  </atem:parameter>
+            </atem:invoke>
+            </atem:function_calls>
+            """,
+            tools: nil)
+
+        let call = try #require(calls.first)
+        #expect(call.function.name == "weather.get_weather")
+        #expect(call.function.arguments["city"] == .string("New York"))
+        #expect(call.function.arguments["days"] == .int(3))
+        #expect(call.function.arguments["detailed"] == .bool(true))
+        #expect(call.function.arguments["filters"] == .object(["units": .string("metric")]))
+        #expect(call.function.arguments["note"] == .string("  keep surrounding spaces  "))
+    }
+
+    @Test("ATEM parser handles multiline values and multiple invocations")
+    func atemParserMultipleCalls() {
+        let calls = ATEMToolCallParser().parseEOS(
+            """
+            <atem:invoke name="files.write"><atem:parameter name="content">first line
+            second line</atem:parameter></atem:invoke>
+            <atem:invoke name="files.read"><atem:parameter name="path">notes.txt</atem:parameter></atem:invoke>
+            """,
+            tools: nil)
+
+        #expect(calls.map(\.function.name) == ["files.write", "files.read"])
+        #expect(calls.first?.function.arguments["content"] == .string("first line\nsecond line"))
+        #expect(calls.last?.function.arguments["path"] == .string("notes.txt"))
+    }
 }

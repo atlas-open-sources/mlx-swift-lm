@@ -135,6 +135,12 @@ public struct ReasoningConfig: Sendable, Equatable {
         let type = modelType.lowercased()
         let id = (modelId ?? "").lowercased()
 
+        if type == "muse_glimmer" {
+            return ReasoningConfig(
+                startDelimiter: "to=self<|message|>", endDelimiter: "<|eom|>",
+                promptStrategy: .none, isSpecialToken: true)
+        }
+
         // Qwen3 family: <think>/</think>, thinking toggled via `enable_thinking`.
         //
         // Keyed on the model_type prefix, so a non-thinking Qwen3 variant (e.g.

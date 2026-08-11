@@ -105,6 +105,7 @@ public enum VLMTypeRegistry {
         "lfm2_vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "lfm2-vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "glm_ocr": create(GlmOcrConfiguration.self, GlmOcr.init),
+        "muse_glimmer": create(MuseGlimmerConfiguration.self, MuseGlimmer.init),
     ])
 }
 
@@ -140,6 +141,8 @@ public enum VLMProcessorTypeRegistry {
             LFM2VLProcessorConfiguration.self, LFM2VLProcessor.init),
         "Glm46VProcessor": create(
             GlmOcrProcessorConfiguration.self, GlmOcrProcessor.init),
+        "MuseGlimmerProcessor": create(
+            MuseGlimmerProcessorConfiguration.self, MuseGlimmerProcessor.init),
     ])
 }
 
@@ -385,6 +388,10 @@ public final class VLMModelFactory: GenericModelFactory {
         if mutableConfiguration.toolCallFormat == nil {
             mutableConfiguration.toolCallFormat = ToolCallFormat.infer(from: baseConfig.modelType)
         }
+        if mutableConfiguration.reasoningConfig == nil {
+            mutableConfiguration.reasoningConfig = ReasoningConfig.infer(
+                from: baseConfig.modelType, modelId: configuration.name)
+        }
 
         // Load tokenizer from model directory (or alternate tokenizer repo),
         // processor config, and weights in parallel using async let.
@@ -439,7 +446,8 @@ public final class VLMModelFactory: GenericModelFactory {
             extraEOSTokens: mutableConfiguration.extraEOSTokens,
             stopStrings: mutableConfiguration.stopStrings,
             eosTokenIds: mutableConfiguration.eosTokenIds,
-            toolCallFormat: mutableConfiguration.toolCallFormat)
+            toolCallFormat: mutableConfiguration.toolCallFormat,
+            reasoningConfig: mutableConfiguration.reasoningConfig)
 
         return .init(
             configuration: modelConfig, model: model, processor: processor,
