@@ -787,7 +787,7 @@ final class Gemma4TextAttention: Module {
     @ModuleInfo(key: "q_norm") var qNorm: Gemma4RMSNormZeroShift
     @ModuleInfo(key: "k_norm") var kNorm: Gemma4RMSNormZeroShift?
     @ModuleInfo(key: "v_norm") var vNorm: Gemma4RMSNormNoScale?
-    @ModuleInfo var rope: OffsetLayer
+    @ModuleInfo var rope: RoPELayer
 
     init(config: Gemma4TextConfiguration, layerIdx: Int, kvSharedOnly: Bool = false) {
         self.config = config
@@ -846,18 +846,19 @@ final class Gemma4TextAttention: Module {
         _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode = .none,
         cache: KVCache? = nil,
         sharedKV: Gemma4SharedKVState? = nil,
-        offset: Int? = nil
-    ) -> (MLXArray, Gemma4SharedKVState?, Int) {
+        offset: RoPEOffset? = nil
+    ) -> (MLXArray, Gemma4SharedKVState?, RoPEOffset?) {
         let (batch, length, _) = (x.dim(0), x.dim(1), x.dim(2))
 
         var queries = qProj(x).reshaped(batch, length, numHeads, headDim)
         queries = qNorm(queries)
 
-        let currentOffset: Int
+        // Preserve per-row positions when decoding ragged batches.
+        let currentOffset: RoPEOffset?
         let kvState: Gemma4SharedKVState?
 
         if let sharedKV {
-            currentOffset = offset ?? 0
+            currentOffset = offset
             kvState = sharedKV
         } else {
             // KV-owning path: K/V projections must be present. If they are nil
@@ -868,7 +869,7 @@ final class Gemma4TextAttention: Module {
                 fatalError(
                     "Gemma4 attention called without sharedKV on a KV-shared layer")
             }
-            currentOffset = cache?.offset ?? 0
+            currentOffset = cache?.ropeOffset
             var keys = kProj(x).reshaped(batch, length, numKVHeads, headDim)
             var values =
                 if useKEqV {
@@ -878,7 +879,7 @@ final class Gemma4TextAttention: Module {
                 }
             keys = kNorm(keys).transposed(0, 2, 1, 3)
             values = vNorm(values).transposed(0, 2, 1, 3)
-            keys = rope(keys, offset: currentOffset)
+            keys = applyRotaryPosition(rope, to: keys, offset: currentOffset)
             if let quantizedCache = cache as? QuantizedKVCacheProtocol {
                 let (quantizedKeys, quantizedValues) = quantizedCache.updateQuantized(
                     keys: keys, values: values)
@@ -898,7 +899,7 @@ final class Gemma4TextAttention: Module {
         }
 
         queries = queries.transposed(0, 2, 1, 3)
-        queries = rope(queries, offset: currentOffset)
+        queries = applyRotaryPosition(rope, to: queries, offset: currentOffset)
 
         guard let kvState else {
             fatalError("Gemma4 attention expected a KV state")
@@ -1004,8 +1005,8 @@ final class Gemma4TextDecoderLayer: Module {
         cache: KVCache? = nil,
         perLayerInput: MLXArray? = nil,
         sharedKV: Gemma4SharedKVState? = nil,
-        offset: Int? = nil
-    ) -> (MLXArray, Gemma4SharedKVState?, Int) {
+        offset: RoPEOffset? = nil
+    ) -> (MLXArray, Gemma4SharedKVState?, RoPEOffset?) {
         var residual = x
         var h = inputLayerNorm(x)
         let (attentionOutput, kvState, attentionOffset) = selfAttention(
@@ -1284,7 +1285,7 @@ final class Gemma4TextBackbone: Module {
         }
 
         var h = h0
-        var intermediates = [(kv: Gemma4SharedKVState?, offset: Int?)](
+        var intermediates = [(kv: Gemma4SharedKVState?, offset: RoPEOffset?)](
             repeating: (nil, nil), count: config.hiddenLayers)
         for (idx, layer) in layers.enumerated() {
             let sourceIdx = layerIdxToCacheIdx[idx]
