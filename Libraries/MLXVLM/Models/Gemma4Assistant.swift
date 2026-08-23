@@ -310,7 +310,10 @@ public final class Gemma4AssistantDraftModel: Module, MTPDrafterModel {
                 : .array(slidingMask)
             let (out, _, _) = layer(
                 h, mask: layerMask, cache: nil, perLayerInput: nil,
-                sharedKV: kvState, offset: queryOffset)
+                // The drafter runs one sequence at a time, so a scalar anchor is
+                // correct here — it is wrapped rather than widened because the
+                // attention now speaks `RoPEOffset`.
+                sharedKV: kvState, offset: .scalar(queryOffset))
             h = out
         }
 
