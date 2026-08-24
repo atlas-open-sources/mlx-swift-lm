@@ -100,7 +100,9 @@ class Qwen3MLP: Module, UnaryLayer {
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        down(silu(gate(x)) * up(x))
+        // Fused silu(gate)·up via the shared compiled kernel (see
+        // SwitchLayers.compiledSiluProduct). Experiment branch.
+        down(compiledSiluProduct(gate(x), up(x)))
     }
 }
 

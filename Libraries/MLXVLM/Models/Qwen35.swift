@@ -443,7 +443,11 @@ enum Qwen35Language {
         }
 
         func callAsFunction(_ x: MLXArray) -> MLXArray {
-            downProj(silu(gateProj(x)) * upProj(x))
+            // Fused silu(gate)·up: one compiled kernel instead of three
+            // elementwise dispatches — the same helper the MoE paths and
+            // LFM2MoE's dense MLP already use. Experiment branch; merges on a
+            // measured win only.
+            downProj(compiledSiluProduct(gateProj(x), upProj(x)))
         }
     }
 
