@@ -61,7 +61,11 @@ let package = Package(
         .default(enabledTraits: ["FoundationModelsIntegration"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.6")),
+        // Fork-only: align the mlx-swift identity with downstream consumers.
+        // Restore the upstream dependency when the lower-level RoPE fix ships.
+        .package(
+            url: "https://github.com/atlas-open-sources/mlx-swift",
+            revision: "934264e56a75799f5784f5900e7bf1c60a3635a9"),
         // 602.0.0 floor: swift.org publishes signed prebuilt swift-syntax artifacts only for
         // >= 602 tags on current toolchains; a 600.x/601.x resolution falls back to the full
         // source compile of swift-syntax.
