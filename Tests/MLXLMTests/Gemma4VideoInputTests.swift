@@ -4,9 +4,9 @@ import CoreImage
 import CoreMedia
 import Foundation
 import MLX
-import MLXLMCommon
 import Testing
 
+@testable import MLXLMCommon
 @testable import MLXVLM
 
 // MARK: - Video input for the base Gemma 4 (`gemma4`) VLM
@@ -18,6 +18,28 @@ import Testing
 // wiring on the non-unified `Gemma4` class and its `Gemma4Processor`.
 
 struct Gemma4VideoInputTests {
+    @Test("Gemma4 propagates an unreadable decoded video frame as an input error")
+    func unreadableFrameThrows() async throws {
+        let config = try JSONDecoder().decode(
+            Gemma4ProcessorConfiguration.self,
+            from: Data(#"{"processor_class": "Gemma4Processor"}"#.utf8))
+        let processor = Gemma4Processor(config, tokenizer: VideoTestTokenizer())
+        let missingImage = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("missing-frame.png")
+        let frames = [
+            UserInput.VideoFrame(image: .url(missingImage), timeStamp: .zero),
+            UserInput.VideoFrame(
+                image: .url(missingImage), timeStamp: CMTime(value: 1, timescale: 1)),
+        ]
+
+        do {
+            _ = try await processor.processVideos([.frames(frames)], processing: nil)
+            Issue.record("Expected the unreadable frame to throw before tensor conversion")
+        } catch UserInputError.unableToLoad(let url) {
+            #expect(url == missingImage)
+        }
+    }
 
     /// `Gemma4Configuration` decodes `video_token_id` when present and leaves it nil
     /// otherwise (older text+vision checkpoints keep working unchanged).
@@ -115,8 +137,9 @@ struct Gemma4VideoInputTests {
         // Four synthetic 64x64 frames at 1s spacing.
         let frames = (0 ..< 4).map { i in
             UserInput.VideoFrame(
-                frame: CIImage(color: CIColor(red: 0.3, green: 0.5, blue: 0.7))
-                    .cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64)),
+                image: .ciImage(
+                    CIImage(color: CIColor(red: 0.3, green: 0.5, blue: 0.7))
+                        .cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))),
                 timeStamp: CMTime(value: Int64(i), timescale: 1))
         }
         let (pixels, frameCounts) = try await processor.processVideos(
