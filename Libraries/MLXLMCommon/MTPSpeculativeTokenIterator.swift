@@ -68,6 +68,10 @@ public struct MTPSpeculativeTokenIterator: TokenIteratorProtocol {
     /// `next()` runs single-token generation against the main model only —
     /// no further `speculateRound` calls. Sticky: never reverts to `false`.
     private var passthrough = false
+    /// Sabotage control for exactness gates; see the verify loop. Read once per process.
+    static let sabotageArmed =
+        ProcessInfo.processInfo.environment["MLX_MTP_SABOTAGE_ACCEPT_WRONG"] == "1"
+    private var sabotageSpent = false
     private var passthroughLoggedOnce = false
 
     /// Verify-position index in the prior round's emitted hidden that
@@ -511,6 +515,15 @@ public struct MTPSpeculativeTokenIterator: TokenIteratorProtocol {
             let targetTokenValue = targetToken.item(Int.self)
             processor?.didSample(token: targetToken)
             pendingTokens.append(targetTokenValue)
+            if targetTokenValue != draftTokensList[i], Self.sabotageArmed, !sabotageSpent {
+                // Exactness-gate sabotage control (MLX_MTP_SABOTAGE_ACCEPT_WRONG=1): accept ONE
+                // draft the verifier rejected, so a token-exact gate must turn red. Never set in
+                // production; it exists to prove the gate can fail.
+                sabotageSpent = true
+                pendingTokens[pendingTokens.count - 1] = draftTokensList[i]
+                accepted += 1
+                continue
+            }
             guard targetTokenValue == draftTokensList[i] else {
                 finalToken = targetToken
                 break
