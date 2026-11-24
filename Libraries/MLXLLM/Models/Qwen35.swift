@@ -647,7 +647,7 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
             // compiled tape (pinned by Qwen35CompiledDecodeLifecycleTests).
             // The trace bakes the weights it captured — recreate the module
             // rather than swapping parameters on a live one.
-            compiledForward = compile { [unowned self] x in forward(x) }
+            compiledForward = compile(inputs: []) { [unowned self] x in forward(x) }
         }
         let fn = compiledForward!
         compileLock.unlock()
@@ -780,7 +780,7 @@ final class Qwen35DecoderLayer: Module {
         compileLock.lock()
         if compiledLinearLayer == nil {
             // [unowned self]: see Qwen35SparseMoeBlock.callAsFunction.
-            compiledLinearLayer = compile { [unowned self] args in
+            compiledLinearLayer = compile(inputs: []) { [unowned self] args in
                 let (out, newConvState, newRecState) = linearLayerBody(
                     x: args[0], convState: args[1], recState: args[2])
                 return [out, newConvState, newRecState]
@@ -803,13 +803,13 @@ final class Qwen35DecoderLayer: Module {
     ) -> MLXArray {
         compileLock.lock()
         if compiledAttentionPre == nil {
-            compiledAttentionPre = compile { [unowned self] args in
+            compiledAttentionPre = compile(inputs: []) { [unowned self] args in
                 let (queries, gate, keys, values) = attentionPreBody(x: args[0])
                 return [queries, gate, keys, values]
             }
         }
         if compiledAttentionPost == nil {
-            compiledAttentionPost = compile { [unowned self] args in
+            compiledAttentionPost = compile(inputs: []) { [unowned self] args in
                 [attentionPostBody(x: args[0], attention: args[1], gate: args[2])]
             }
         }
