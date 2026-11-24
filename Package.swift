@@ -65,7 +65,7 @@ let package = Package(
         // Restore the upstream dependency when the lower-level RoPE fix ships.
         .package(
             url: "https://github.com/atlas-open-sources/mlx-swift",
-            revision: "ea227ae6323128b1b68310bb9424002b0bb0ee64"),
+            revision: "603209460c5fed217427846dc9e40bdab55d3f5f"),
         // 602.0.0 floor: swift.org publishes signed prebuilt swift-syntax artifacts only for
         // >= 602 tags on current toolchains; a 600.x/601.x resolution falls back to the full
         // source compile of swift-syntax.
