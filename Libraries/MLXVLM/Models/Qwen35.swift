@@ -322,7 +322,7 @@ enum Qwen35Language {
         func callAsFunction(_ hiddenStates: MLXArray, gate: MLXArray? = nil) -> MLXArray {
             var x = MLXFast.rmsNorm(hiddenStates, weight: weight, eps: eps)
             if let gate {
-                x = x * silu(gate)
+                x = (silu(gate.asType(.float32)) * x.asType(.float32)).asType(hiddenStates.dtype)
             }
             return x
         }
@@ -571,7 +571,8 @@ enum Qwen35Language {
         func projectInputs(_ inputs: MLXArray, batch: Int, sequence: Int) -> (
             qkv: MLXArray, z: MLXArray, b: MLXArray, a: MLXArray
         ) {
-            guard fusedInputProjectionEnabled, let fusedInProj = fusedInputProjection.fused else {
+            // Wider fused output changes the core's split-K partition for prefill.
+            guard sequence == 1, fusedInputProjectionEnabled, let fusedInProj = fusedInputProjection.fused else {
                 return (
                     inProjQKV(inputs),
                     inProjZ(inputs).reshaped(batch, sequence, numVHeads, headVDim),
@@ -652,7 +653,7 @@ enum Qwen35Language {
                     aLog: aLog,
                     dtBias: dtBias,
                     state: state,
-                    mask: prefixMask)
+                    mask: prefixMask, referenceRounding: true)
                 let (suffixOut, suffixState) = gatedDeltaUpdate(
                     q: qNormed[0..., split..., 0..., 0...],
                     k: kNormed[0..., split..., 0..., 0...],
@@ -662,7 +663,7 @@ enum Qwen35Language {
                     aLog: aLog,
                     dtBias: dtBias,
                     state: prefixState,
-                    mask: suffixMask)
+                    mask: suffixMask, referenceRounding: true)
                 out = concatenated([prefixOut, suffixOut], axis: 1)
                 state = suffixState
 
@@ -691,7 +692,7 @@ enum Qwen35Language {
                     aLog: aLog,
                     dtBias: dtBias,
                     state: state,
-                    mask: mask)
+                    mask: mask, referenceRounding: true)
             }
 
             if let cache {
