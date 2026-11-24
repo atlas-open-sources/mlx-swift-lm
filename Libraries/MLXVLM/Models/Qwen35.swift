@@ -343,6 +343,7 @@ enum Qwen35Language {
         @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
 
         let rotaryEmbedding: RotaryEmbedding
+        private let flatRotary: RoPE?
 
         init(_ args: Qwen35Configuration.TextConfiguration) {
             self.numKeyValueHeads = args.kvHeads
@@ -366,6 +367,11 @@ enum Qwen35Language {
             let rotaryDim = Int(Float(headDim) * args.partialRotaryFactor)
             self.rotaryEmbedding = RotaryEmbedding(
                 dim: rotaryDim, base: args.ropeTheta, mropeSection: mrope)
+            let ropeType = args.ropeParameters?["type"]
+                ?? args.ropeParameters?["rope_type"] ?? .string("default")
+            self.flatRotary = ropeType == .string("default")
+                ? RoPE(dimensions: rotaryDim, traditional: false, base: args.ropeTheta)
+                : nil
             super.init()
         }
 
@@ -390,23 +396,30 @@ enum Qwen35Language {
             keys = kNorm(keys.reshaped(B, L, numKeyValueHeads, -1)).transposed(0, 2, 1, 3)
             values = values.reshaped(B, L, numKeyValueHeads, -1).transposed(0, 2, 1, 3)
 
-            var kvSeqLen = keys.dim(-2)
-            var positionIds = positionIds
+            let offset = cache?.offset ?? 0
+            let kvSeqLen = keys.dim(-2) + (cache != nil || positionIds == nil ? offset + 1 : 0)
 
-            if positionIds == nil {
-                let offset = cache?.offset ?? 0
-                kvSeqLen += offset + 1
-                var base = MLXArray(stride(from: offset, to: offset + L, by: 1)).asType(.int32)
-                base = tiled(base[.newAxis, 0...], repetitions: [B, 1])
-                positionIds = base[.newAxis, 0..., 0...]
-                positionIds = tiled(positionIds!, repetitions: [3, 1, 1])
-            } else if let cache {
-                kvSeqLen += cache.offset + 1
+            // A vector carries the start of each contiguous sequence. Use the
+            // fused FP32 rotation for these positions, as mlx-lm does. Image
+            // and video spans keep their explicit [3, batch, length] IDs.
+            if let flatRotary, positionIds == nil || positionIds?.ndim == 1 {
+                if let starts = positionIds {
+                    queries = flatRotary(queries, offset: starts)
+                    keys = flatRotary(keys, offset: starts)
+                } else {
+                    queries = flatRotary(queries, offset: offset)
+                    keys = flatRotary(keys, offset: offset)
+                }
+            } else {
+                var positions = positionIds ?? broadcast(
+                    arange(offset, offset + L).asType(.int32).reshaped(1, L), to: [B, L])
+                if positions.ndim == 1 {
+                    positions = positions[0..., .newAxis] + arange(L).asType(.int32)
+                }
+                let (cosValues, sinValues) = rotaryEmbedding(x: values, positionIds: positions)
+                (queries, keys) = applyMultimodalRotaryPosEmb(
+                    q: queries, k: keys, cos: cosValues, sin: sinValues)
             }
-
-            let (cosValues, sinValues) = rotaryEmbedding(x: values, positionIds: positionIds!)
-            (queries, keys) = applyMultimodalRotaryPosEmb(
-                q: queries, k: keys, cos: cosValues, sin: sinValues)
 
             let attentionMask: MLXFast.ScaledDotProductAttentionMaskMode
             if let mask {
@@ -967,21 +980,18 @@ enum Qwen35Language {
                             videoTokenId: config.videoTokenId,
                             visionStartTokenId: config.visionStartTokenId,
                             attentionMask: ropeMask)
-                        positionIds = computed
+                        positionIds = imageGridTHW == nil && videoGridTHW == nil
+                            ? deltas : computed
                         state[precomputedPositionIdsKey] = computed
                         state[ropeDeltasKey] = deltas
                     }
                 } else {
                     let batchSize = inputs.dim(0)
-                    let seqLength = inputs.dim(1)
 
                     var delta = MLXArray(cacheOffset).asType(.int32)
                     if let ropeDeltas {
                         delta = delta + ropeDeltas.asType(.int32)
                     }
-
-                    var base = MLXArray(0 ..< seqLength).asType(.int32)
-                    base = broadcast(base[.newAxis, 0...], to: [batchSize, seqLength])
 
                     if delta.ndim == 0 {
                         delta = broadcast(delta, to: [batchSize])
@@ -991,9 +1001,7 @@ enum Qwen35Language {
                         delta = delta[0 ..< batchSize]
                     }
 
-                    base = base + delta[0..., .newAxis]
-                    positionIds = broadcast(
-                        base[.newAxis, 0..., 0...], to: [3, batchSize, seqLength])
+                    positionIds = delta
                 }
             }
 
@@ -1342,13 +1350,18 @@ public class Qwen35: Module, VLMModel {
 
         /// One forward over `range`, slicing positions and embeddings in lockstep.
         func forward(_ range: Range<Int>) -> LMOutput {
-            languageModel(
+            let positions = if imageFrames == nil && videoFrames == nil {
+                positionIds[0, 0..., range.lowerBound]
+            } else {
+                positionIds[0..., 0..., range]
+            }
+            return languageModel(
                 inputIds[0..., range],
                 inputsEmbeds: inputEmbeddings.map { $0[0..., range, 0...] },
                 cache: typedCache,
                 state: nil,
                 mask: nil,
-                positionIds: positionIds[0..., 0..., range],
+                positionIds: positions,
                 // Never the pixels: a non-nil value here clears the carried
                 // anchor and restarts positions at zero.
                 pixelValues: nil,
